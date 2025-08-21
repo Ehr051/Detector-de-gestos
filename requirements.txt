@@ -1,1 +1,7 @@
-opencv-python\nnumpy\nmediapipe
+opencv-python
+numpy
+mediapipe
+pyautogui
+sys
+os
+time
