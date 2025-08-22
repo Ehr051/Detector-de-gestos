@@ -123,14 +123,15 @@ def check_files():
     print("\n📁 Verificando archivos del proyecto...")
     
     required_files = [
-        'control_gestos.py',
+        'detectorGestos.py',
         'requirements.txt',
         'config.json'
     ]
     
     optional_files = [
+        'control_gestos.py',
         'DetectorGestosOptimizado.py',
-        'DetectorGestos.py',
+        'demo.py',
         'launch_macos.sh',
         'launch_windows.bat'
     ]
@@ -224,7 +225,7 @@ def main():
     if passed == total:
         print("\n🎉 ¡Todo está configurado correctamente!")
         print("   Puedes ejecutar el programa principal:")
-        print("   python control_gestos.py")
+        print("   python detectorGestos.py")
     else:
         print(f"\n⚠️  {total - passed} problemas encontrados.")
         provide_installation_help()

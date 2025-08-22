@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 # Variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/detector_gestos_env"
-PYTHON_SCRIPT="control_gestos.py"
+PYTHON_SCRIPT="detectorGestos.py"
 REQUIREMENTS_FILE="requirements.txt"
 
 # Función para mostrar el banner

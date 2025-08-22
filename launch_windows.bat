@@ -7,7 +7,7 @@ setlocal EnableDelayedExpansion
 :: Variables
 set SCRIPT_DIR=%~dp0
 set VENV_DIR=%SCRIPT_DIR%detector_gestos_env
-set PYTHON_SCRIPT=control_gestos.py
+set PYTHON_SCRIPT=detectorGestos.py
 set REQUIREMENTS_FILE=requirements.txt
 
 :: Colores para output (si está disponible)

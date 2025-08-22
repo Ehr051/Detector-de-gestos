@@ -69,3 +69,8 @@ Thumbs.db
 # Archivos específicos del proyecto
 test_*.py
 debug_*.py
+
+# Archivos generados durante ejecución
+detector_gestos.log
+*.log
+calibracion_matriz.npy
