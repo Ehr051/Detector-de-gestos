@@ -95,18 +95,6 @@ class ControladorGestos:
         # Variables para la interfaz
         self.ultimo_gesto = "ninguno"
         self.tiempo_gesto = time.time()
-        self.mostrar_interfaz = self.config.get('interfaz', {}).get('mostrar_por_defecto', True)
-        self.interfaz_compacta = False  # Modo compacto
-        
-        # Variables para doble click
-        self.ultimo_click_tiempo = 0
-        self.doble_click_ventana = self.config['gestos'].get('doble_click_ventana', 0.5)
-        self.click_count = 0
-        
-        # Variables para calibración mejorada
-        self.tiempo_en_punto = 0
-        self.tiempo_requerido_calibracion = self.config['gestos'].get('tiempo_calibracion', 3.0)
-        self.punto_calibracion_activo = False
         
         logger.info(f"Controlador de gestos inicializado en modo: {modo}")
     
@@ -136,30 +124,9 @@ class ControladorGestos:
         """Dibuja la interfaz principal con información del sistema"""
         altura, ancho, _ = frame.shape
         
-        # Botón para mostrar/ocultar interfaz
-        boton_x, boton_y = ancho - 150, 10
-        boton_w, boton_h = 140, 30
-        
-        # Dibujar botón
-        color_boton = (0, 100, 0) if self.mostrar_interfaz else (100, 0, 0)
-        cv2.rectangle(frame, (boton_x, boton_y), (boton_x + boton_w, boton_y + boton_h), color_boton, -1)
-        cv2.rectangle(frame, (boton_x, boton_y), (boton_x + boton_w, boton_y + boton_h), (255, 255, 255), 2)
-        
-        texto_boton = "Ocultar Interfaz" if self.mostrar_interfaz else "Mostrar Interfaz"
-        cv2.putText(frame, texto_boton, (boton_x + 5, boton_y + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        # Si la interfaz está oculta, solo mostrar información mínima
-        if not self.mostrar_interfaz:
-            # Solo modo y estado básico
-            modo_texto = "PANTALLA" if self.modo == "pantalla" else "MESA"
-            cv2.putText(frame, f"Modo: {modo_texto}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            return frame
-        
-        # Panel superior - Información del sistema (solo si interfaz visible)
+        # Panel superior - Información del sistema
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (ancho-160, 120), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (10, 10), (ancho-10, 120), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
         
         # Título principal
@@ -191,9 +158,6 @@ class ControladorGestos:
     
     def dibujar_panel_controles(self, frame):
         """Dibuja el panel de controles disponibles"""
-        if not self.mostrar_interfaz:
-            return frame
-            
         altura, ancho, _ = frame.shape
         
         # Panel de controles
@@ -206,16 +170,13 @@ class ControladorGestos:
                   (20, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Controles de teclado
-        cv2.putText(frame, "Q = Salir  |  M = Cambiar Modo  |  C = Calibrar  |  + = Más Suavizado  |  - = Menos Suavizado  |  H = Ocultar/Mostrar", 
-                  (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 2)
+        cv2.putText(frame, "Q = Salir  |  M = Cambiar Modo  |  C = Calibrar  |  + = Más Suavizado  |  - = Menos Suavizado", 
+                  (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2)
         
         return frame
     
     def dibujar_panel_gestos(self, frame):
         """Dibuja el panel con información sobre gestos"""
-        if not self.mostrar_interfaz:
-            return frame
-            
         altura, ancho, _ = frame.shape
         
         # Panel de gestos
@@ -228,7 +189,7 @@ class ControladorGestos:
                   (20, 235), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Lista de gestos
-        cv2.putText(frame, "✋ Mano Abierta = Mover Cursor  |  👌 Pinza (Pulgar+Índice) = Click/Doble Click", 
+        cv2.putText(frame, "✋ Mano Abierta = Mover Cursor  |  👌 Pinza (Pulgar+Índice) = Click Izquierdo", 
                   (20, 255), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 2)
         cv2.putText(frame, "🤟 Pulgar+Medio = Click Derecho  |  ✊ Puño = Click Alternativo  |  ✊✊ Dos Puños = Zoom", 
                   (20, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 2)
@@ -237,9 +198,6 @@ class ControladorGestos:
     
     def dibujar_informacion_lateral(self, frame):
         """Dibuja información del sistema en el lado derecho"""
-        if not self.mostrar_interfaz:
-            return frame
-            
         altura, ancho, _ = frame.shape
         info_x = ancho - 320
         
@@ -262,7 +220,7 @@ class ControladorGestos:
         cv2.putText(frame, f"Confianza: {self.config['deteccion']['min_detection_confidence']}", 
                   (info_x + 10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        cv2.putText(frame, f"Doble click: {self.doble_click_ventana}s", 
+        cv2.putText(frame, f"Detección: MediaPipe", 
                   (info_x + 10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # Tiempo actual
@@ -280,61 +238,50 @@ class ControladorGestos:
         """Dibuja indicadores en tiempo real de los gestos detectados"""
         altura, ancho, _ = frame.shape
         
-        # Panel inferior para gestos activos (siempre visible pero más compacto si interfaz oculta)
-        panel_altura = 60 if not self.mostrar_interfaz else 120
-        panel_y = altura - panel_altura - 10
-        
+        # Panel inferior para gestos activos
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, panel_y), (ancho-10, altura-10), (0, 40, 0), -1)
+        cv2.rectangle(overlay, (10, altura-120), (ancho-10, altura-10), (0, 40, 0), -1)
         cv2.addWeighted(overlay, 0.9, frame, 0.1, 0, frame)
         
-        if self.mostrar_interfaz:
-            # Título completo
-            cv2.putText(frame, "ESTADO ACTUAL:", 
-                      (20, panel_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            info_y = panel_y + 55
-            pos_y = panel_y + 85
-        else:
-            # Modo compacto
-            info_y = panel_y + 25
-            pos_y = panel_y + 45
+        # Título
+        cv2.putText(frame, "ESTADO ACTUAL:", 
+                  (20, altura-95), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Gesto detectado
         gesto_texto = "Sin gesto detectado"
         gesto_color = (128, 128, 128)
         
         if info_gesto['gesto'] == 'click':
-            gesto_texto = "🖱️ CLICK IZQUIERDO"
+            gesto_texto = "🖱️ CLICK IZQUIERDO ACTIVO"
             gesto_color = (255, 0, 0)
-        elif info_gesto['gesto'] == 'doble_click':
-            gesto_texto = "🖱️ DOBLE CLICK"
-            gesto_color = (255, 100, 0)
         elif info_gesto['gesto'] == 'arrastrar':
-            gesto_texto = "↔️ ARRASTRANDO"
+            gesto_texto = "↔️ ARRASTRANDO OBJETO"
             gesto_color = (255, 100, 0)
         elif info_gesto['gesto'] == 'menu_contextual':
-            gesto_texto = "📋 CLICK DERECHO"
+            gesto_texto = "📋 CLICK DERECHO ACTIVO"
             gesto_color = (0, 0, 255)
         elif info_gesto['gesto'] == 'zoom_in':
-            gesto_texto = "🔍 ZOOM IN"
+            gesto_texto = "🔍 ZOOM IN (Acercando)"
             gesto_color = (0, 255, 0)
         elif info_gesto['gesto'] == 'zoom_out':
-            gesto_texto = "🔍 ZOOM OUT"
+            gesto_texto = "🔍 ZOOM OUT (Alejando)"
             gesto_color = (255, 0, 255)
         elif info_gesto['gesto'] == 'ninguno':
             if info_gesto['posicion'] is not None:
                 gesto_texto = "👋 Moviendo cursor"
                 gesto_color = (0, 255, 255)
         
-        tamano_fuente = 0.6 if not self.mostrar_interfaz else 0.7
         cv2.putText(frame, f"Gesto: {gesto_texto}", 
-                  (20, info_y), cv2.FONT_HERSHEY_SIMPLEX, tamano_fuente, gesto_color, 2)
+                  (20, altura-70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, gesto_color, 2)
         
-        # Posición del cursor (solo si hay espacio)
-        if self.mostrar_interfaz and info_gesto['posicion'] is not None:
+        # Posición del cursor
+        if info_gesto['posicion'] is not None:
             x, y = info_gesto['posicion']
-            cv2.putText(frame, f"Posición: ({x}, {y})", 
-                      (20, pos_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(frame, f"Posición del cursor: ({x}, {y})", 
+                      (20, altura-40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        else:
+            cv2.putText(frame, "Posición del cursor: No detectada", 
+                      (20, altura-40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
         
         return frame
     
@@ -466,44 +413,24 @@ class ControladorGestos:
         
         # Click izquierdo: pinza entre índice y pulgar
         if distancia_pulgar_indice < self.config['gestos']['distancia_pinza']:
-            tiempo_actual = time.time()
-            
-            # Detectar doble click
-            if not self.clicking:
-                if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
-                    info_gesto['gesto'] = 'doble_click'
-                    self.click_count = 2
-                else:
-                    info_gesto['gesto'] = 'click'
-                    self.click_count = 1
-                self.ultimo_click_tiempo = tiempo_actual
-            else:
-                # Mantener el gesto actual si ya está clickeando
-                if self.click_count == 2:
-                    info_gesto['gesto'] = 'doble_click'
-                else:
-                    info_gesto['gesto'] = 'click'
-            
+            info_gesto['gesto'] = 'click'
             # Dibujar indicador visual
-            color_click = (255, 100, 0) if info_gesto['gesto'] == 'doble_click' else (255, 0, 0)
-            cv2.circle(frame, indice_punta, 15, color_click, -1)
-            cv2.circle(frame, pulgar_punta, 15, color_click, -1)
-            cv2.line(frame, indice_punta, pulgar_punta, color_click, 2)
+            cv2.circle(frame, indice_punta, 15, (255, 0, 0), -1)
+            cv2.circle(frame, pulgar_punta, 15, (255, 0, 0), -1)
+            cv2.line(frame, indice_punta, pulgar_punta, (255, 0, 0), 2)
             
             # Detectar arrastre si se mantiene la pinza y se mueve
             if self.dragging or self.clicking:
-                if info_gesto['gesto'] != 'doble_click':  # No arrastrar en doble click
-                    info_gesto['gesto'] = 'arrastrar'
-                    if self.punto_inicial_arrastre:
-                        info_gesto['datos_adicionales']['punto_inicial'] = self.punto_inicial_arrastre
-                        # Dibujar línea de arrastre
-                        cv2.line(frame, self.punto_inicial_arrastre, posicion_cursor, (255, 0, 0), 2)
+                info_gesto['gesto'] = 'arrastrar'
+                if self.punto_inicial_arrastre:
+                    info_gesto['datos_adicionales']['punto_inicial'] = self.punto_inicial_arrastre
+                    # Dibujar línea de arrastre
+                    cv2.line(frame, self.punto_inicial_arrastre, posicion_cursor, (255, 0, 0), 2)
             else:
                 self.punto_inicial_arrastre = posicion_cursor
         else:
             # Si la pinza se suelta, resetear estado de arrastre
             self.punto_inicial_arrastre = None
-            self.click_count = 0
         
         # Click derecho: pulgar y dedo medio juntos
         if distancia_pulgar_medio < self.config['gestos']['distancia_pinza']:
@@ -658,58 +585,24 @@ class ControladorGestos:
                 distancia = np.sqrt((indice_x - target_x)**2 + (indice_y - target_y)**2)
                 
                 if distancia < 60:
-                    if not self.punto_calibracion_activo:
-                        # Iniciar el temporizador
-                        self.punto_calibracion_activo = True
-                        self.tiempo_en_punto = time.time()
+                    cv2.putText(frame_visual, "¡Posición correcta! Mantén...", 
+                              (ancho//2 - 150, altura - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                     
-                    # Calcular tiempo transcurrido
-                    tiempo_transcurrido = time.time() - self.tiempo_en_punto
-                    tiempo_restante = self.tiempo_requerido_calibracion - tiempo_transcurrido
+                    # Cuenta regresiva visual
+                    for i in range(3, 0, -1):
+                        temp_frame = frame_visual.copy()
+                        cv2.putText(temp_frame, f"Capturando en {i}...", 
+                                  (ancho//2 - 100, altura - 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        cv2.imshow('Control por Gestos - Calibración', temp_frame)
+                        cv2.waitKey(1000)
                     
-                    if tiempo_restante > 0:
-                        # Mostrar progreso de captura
-                        progreso = int((tiempo_transcurrido / self.tiempo_requerido_calibracion) * 100)
-                        cv2.putText(frame_visual, f"Manteniendo posición... {tiempo_restante:.1f}s", 
-                                  (ancho//2 - 200, altura - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                        cv2.putText(frame_visual, f"Progreso: {progreso}%", 
-                                  (ancho//2 - 100, altura - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                        
-                        # Dibujar barra de progreso
-                        barra_x = ancho//2 - 150
-                        barra_y = altura - 40
-                        barra_ancho = 300
-                        barra_alto = 20
-                        
-                        cv2.rectangle(frame_visual, (barra_x, barra_y), 
-                                    (barra_x + barra_ancho, barra_y + barra_alto), (100, 100, 100), 2)
-                        
-                        progreso_ancho = int((progreso / 100) * barra_ancho)
-                        cv2.rectangle(frame_visual, (barra_x, barra_y), 
-                                    (barra_x + progreso_ancho, barra_y + barra_alto), (0, 255, 0), -1)
-                        
-                        # Círculo de retroalimentación que se agranda
-                        radio_feedback = int(30 + (progreso / 100) * 20)
-                        cv2.circle(frame_visual, (indice_x, indice_y), radio_feedback, (0, 255, 0), 3)
-                    else:
-                        # Tiempo completado, capturar punto
-                        self.puntos_calibracion_camara.append((indice_x, indice_y))
-                        self.punto_calibracion_activo = False
-                        
-                        # Feedback visual de captura
-                        cv2.putText(frame_visual, f"¡Punto {punto_actual+1} capturado!", 
-                                  (ancho//2 - 150, altura - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                        
-                        # Si completamos todos los puntos
-                        if len(self.puntos_calibracion_camara) == 4:
-                            self.calibrar_mesa(self.puntos_calibracion_camara, puntos_proyeccion)
-                            return frame_visual, True
-                else:
-                    # Fuera del área objetivo, resetear temporizador
-                    if self.punto_calibracion_activo:
-                        self.punto_calibracion_activo = False
-                        cv2.putText(frame_visual, "Punto perdido, regresa al objetivo", 
-                                  (ancho//2 - 200, altura - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    # Guardar punto
+                    self.puntos_calibracion_camara.append((indice_x, indice_y))
+                    
+                    # Si completamos todos los puntos
+                    if len(self.puntos_calibracion_camara) == 4:
+                        self.calibrar_mesa(self.puntos_calibracion_camara, puntos_proyeccion)
+                        return frame_visual, True
         
         return frame_visual, False
     
@@ -730,11 +623,6 @@ class ControladorGestos:
             if not self.clicking:
                 pyautogui.mouseDown()
                 self.clicking = True
-        elif info_gesto['gesto'] == 'doble_click':
-            if not self.clicking:
-                pyautogui.doubleClick()
-                self.clicking = True
-                logger.info("Doble click ejecutado")
         elif info_gesto['gesto'] == 'arrastrar':
             if not self.dragging:
                 self.dragging = True
@@ -787,12 +675,6 @@ class ControladorGestos:
         
         np.save("calibracion_matriz.npy", self.matriz_transformacion)
         logger.info("Matriz de calibración guardada")
-    
-    def alternar_interfaz(self):
-        """Alterna entre mostrar y ocultar la interfaz"""
-        self.mostrar_interfaz = not self.mostrar_interfaz
-        estado = "visible" if self.mostrar_interfaz else "oculta"
-        logger.info(f"Interfaz {estado}")
     
     def ajustar_suavizado(self, incremento):
         """Ajusta el suavizado de movimiento"""
@@ -859,7 +741,6 @@ def main():
     print("   Q = Salir")
     print("   M = Cambiar modo (Pantalla ↔ Mesa)")
     print("   C = Calibrar (solo modo mesa)")
-    print("   H = Ocultar/Mostrar interfaz")
     print("   + = Más suavizado")
     print("   - = Menos suavizado")
     print("\n🔧 INTERFAZ:")
@@ -918,10 +799,6 @@ def main():
             if modo_actual == "mesa":
                 print("🎯 Iniciando calibración manual...")
                 controlador.iniciar_calibracion()
-        elif key == ord('h'):
-            controlador.alternar_interfaz()
-            estado = "visible" if controlador.mostrar_interfaz else "oculta"
-            print(f"🖼️  Interfaz {estado}")
         elif key == ord('+') or key == ord('='):
             controlador.ajustar_suavizado(1)
         elif key == ord('-'):

@@ -63,80 +63,23 @@ python control_gestos.py
 
 ## 🎮 Uso del Sistema
 
-### Nueva Interfaz Visual v2.0
-
-La nueva versión incluye una **interfaz de usuario completa** que te guía en todo momento:
-
-#### **Panel Superior - Información del Sistema**
-- **Título del programa** y versión actual
-- **Modo activo**: Pantalla o Mesa/Proyección
-- **Estado de calibración**: Calibrado, Sin calibrar, o Calibrando
-
-#### **Panel de Controles**
-- **Q** = Salir del programa
-- **M** = Cambiar entre modo "pantalla" y "mesa"
-- **C** = Iniciar calibración (solo en modo mesa)
-- **+** = Aumentar suavizado del cursor
-- **-** = Reducir suavizado del cursor
-
-#### **Panel de Gestos**
-Muestra todos los gestos disponibles con íconos visuales
-
-#### **Panel Lateral - Información Técnica**
-- Resolución de pantalla detectada
-- Nivel de suavizado actual
-- Configuración de confianza
-- Hora actual del sistema
-- Estado de MediaPipe
-
-#### **Panel Inferior - Estado en Tiempo Real**
-- **Gesto activo actual** con indicadores visuales
-- **Posición del cursor** en coordenadas exactas
-- **Estado de la detección** en tiempo real
-
 ### Gestos Disponibles
 
-| Gesto | Acción | Descripción | Indicador Visual |
-|-------|--------|-------------|------------------|
-| ✋ Mano abierta | Mover cursor | El pulgar controla la posición del cursor | 👋 Moviendo cursor |
-| 👌 Pulgar + Índice | Click izquierdo | Junta el pulgar y el índice para hacer click | 🖱️ CLICK IZQUIERDO ACTIVO |
-| 🤟 Pulgar + Medio | Click derecho | Junta el pulgar y el dedo medio | 📋 CLICK DERECHO ACTIVO |
-| ✊ Puño | Click alternativo | Puño cerrado para hacer click | 🖱️ CLICK IZQUIERDO ACTIVO |
-| ✊✊ Dos puños | Zoom | Acerca/aleja según la distancia entre puños | 🔍 ZOOM IN/OUT |
+| Gesto | Acción | Descripción |
+|-------|--------|-------------|
+| ✋ Mano abierta | Mover cursor | El pulgar controla la posición del cursor |
+| 👌 Pulgar + Índice | Click izquierdo | Junta el pulgar y el índice para hacer click |
+| 🤟 Pulgar + Medio | Click derecho | Junta el pulgar y el dedo medio |
+| ✊ Puño | Click alternativo | Puño cerrado para hacer click |
+| ✊✊ Dos puños | Zoom | Acerca/aleja según la distancia entre puños |
 
 ### Controles de Teclado
 
-| Tecla | Función | Indicador Visual |
-|-------|---------|------------------|
-| `q` | Salir del programa | - |
-| `m` | Cambiar entre modo "pantalla" y "mesa" | Modo: PANTALLA/MESA |
-| `c` | Iniciar calibración manual (solo en modo mesa) | Estado: CALIBRANDO... |
-| `+` | Aumentar suavizado del cursor | Suavizado: 6, 7, 8... |
-| `-` | Reducir suavizado del cursor | Suavizado: 4, 3, 2... |
-
-### Indicadores Visuales en Pantalla
-
-La nueva interfaz v2.0 te muestra **en tiempo real**:
-
-#### **🎯 Estado del Sistema**
-- **Verde**: Sistema listo y funcionando
-- **Naranja**: Modo mesa sin calibrar  
-- **Azul**: Calibración en proceso
-- **Rojo**: Error o acción requerida
-
-#### **🖱️ Gestos Activos**
-- **🖱️ CLICK IZQUIERDO ACTIVO** (Rojo)
-- **↔️ ARRASTRANDO OBJETO** (Naranja) 
-- **📋 CLICK DERECHO ACTIVO** (Azul)
-- **🔍 ZOOM IN (Acercando)** (Verde)
-- **🔍 ZOOM OUT (Alejando)** (Magenta)
-- **👋 Moviendo cursor** (Cian)
-
-#### **📊 Información Técnica**
-- Resolución de pantalla actual
-- Nivel de suavizado configurado
-- Confianza de detección MediaPipe
-- Hora del sistema en tiempo real
+| Tecla | Función |
+|-------|---------|
+| `q` | Salir del programa |
+| `m` | Cambiar entre modo "pantalla" y "mesa" |
+| `c` | Iniciar calibración manual (solo en modo mesa) |
 
 ### Modos de Operación
 

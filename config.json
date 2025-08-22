@@ -12,7 +12,9 @@
         "distancia_pinza": 40,
         "factor_zoom_in": 1.5,
         "factor_zoom_out": 0.7,
-        "suavizado_movimiento": 5
+        "suavizado_movimiento": 5,
+        "doble_click_ventana": 0.5,
+        "tiempo_calibracion": 3.0
     },
     "calibracion": {
         "distancia_calibracion": 50,
@@ -30,5 +32,10 @@
     "logging": {
         "level": "INFO",
         "archivo": "detector_gestos.log"
+    },
+    "interfaz": {
+        "mostrar_por_defecto": true,
+        "mostrar_coordenadas": true,
+        "mostrar_fps": false
     }
 }
