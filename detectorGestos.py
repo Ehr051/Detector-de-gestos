@@ -28,6 +28,7 @@ import sys
 import os
 import json
 import logging
+import argparse
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional, Any
 from dataclasses import dataclass
@@ -175,6 +176,11 @@ class DetectorGestos:
         self.tiempo_requerido_calibracion = self.configuracion.tiempo_calibracion
         self.punto_calibracion_activo = False
         
+        # Variables para confirmación de calibración
+        self.esperando_confirmacion = False
+        self.confirmacion_opcion = 0  # 0=Confirmar, 1=Recalibrar, 2=Cancelar
+        self.mostrar_preview_pantalla = False
+        
         # Variables para la interfaz
         self.ultimo_gesto = TipoGesto.NINGUNO
         self.tiempo_gesto = time.time()
@@ -186,6 +192,9 @@ class DetectorGestos:
         
         # Variable para cambio de cámara
         self.cambiar_camara_solicitado = False
+        
+        # Variable para salir por gesto
+        self.salir_solicitado = False
         
         # Cargar calibración existente si está en modo mesa
         if self.modo == ModoOperacion.MESA:
@@ -260,16 +269,29 @@ class DetectorGestos:
             self.esquina_actual = 0
             self.tiempo_en_punto = 0
             self.punto_calibracion_activo = False
+            self.posicion_cursor_proyeccion = None
             
-            # Definir las esquinas de la proyección (orden: TL, TR, BR, BL)
-            self.esquinas_proyeccion = [
-                (50, 50),    # Top-Left
-                (self.ancho_pantalla - 50, 50),    # Top-Right  
-                (self.ancho_pantalla - 50, self.alto_pantalla - 50),    # Bottom-Right
-                (50, self.alto_pantalla - 50)     # Bottom-Left
+            # No definir esquinas fijas - el usuario elegirá libremente
+            self.nombres_esquinas = [
+                "SUPERIOR IZQUIERDA",
+                "SUPERIOR DERECHA", 
+                "INFERIOR DERECHA",
+                "INFERIOR IZQUIERDA"
             ]
             
-            logger.info("Calibración iniciada. Toca las esquinas de la proyección en orden.")
+            logger.info("=== INICIANDO CALIBRACIÓN ===")
+            logger.info("Define las 4 esquinas de tu área de proyección EN ORDEN:")
+            logger.info("  PUNTO 1: SUPERIOR IZQUIERDA")
+            logger.info("  PUNTO 2: SUPERIOR DERECHA") 
+            logger.info("  PUNTO 3: INFERIOR DERECHA")
+            logger.info("  PUNTO 4: INFERIOR IZQUIERDA")
+            logger.info("")
+            logger.info("INSTRUCCIONES:")
+            logger.info("- Usa mano cerrada con ÍNDICE EXTENDIDO")
+            logger.info("- Mantén el dedo 3 segundos en cada esquina")
+            logger.info("- Presiona 'U' para deshacer el último punto")
+            logger.info("")
+            logger.info(f">>> APUNTA AL PUNTO 1: {self.nombres_esquinas[0]} <<<")
         else:
             logger.warning("La calibración solo está disponible en modo MESA")
     
@@ -280,51 +302,186 @@ class DetectorGestos:
         
         altura, ancho = frame.shape[:2]
         
+        # Detectar gesto de índice extendido (mano cerrada con índice arriba)
+        puntos = []
+        for landmark in landmarks.landmark:
+            x = int(landmark.x * ancho)
+            y = int(landmark.y * altura)
+            puntos.append((x, y))
+        
+        # Verificar si es gesto de índice extendido
+        if not self._es_gesto_indice_extendido(puntos):
+            # Si no es el gesto correcto, resetear
+            if self.punto_calibracion_activo:
+                self.punto_calibracion_activo = False
+                self.tiempo_en_punto = 0
+            return
+        
         # Obtener posición del dedo índice
         indice_tip = landmarks.landmark[8]
         x_dedo = int(indice_tip.x * ancho)
         y_dedo = int(indice_tip.y * altura)
         
-        # Esquina objetivo actual
-        esquina_objetivo = self.esquinas_proyeccion[self.esquina_actual]
+        # Obtener posición actual del cursor en pantalla para proyección
+        cursor_actual = pyautogui.position()
         
-        # Dibujar indicador de calibración
-        self._dibujar_indicador_calibracion(frame, esquina_objetivo, self.esquina_actual)
+        # Dibujar interfaz de calibración
+        self._dibujar_interfaz_calibracion(frame, (x_dedo, y_dedo), cursor_actual)
         
-        # Verificar si el dedo está cerca de la esquina objetivo
-        distancia = np.sqrt((x_dedo - esquina_objetivo[0])**2 + (y_dedo - esquina_objetivo[1])**2)
+        # Dibujar puntos ya calibrados con conexiones
+        self._dibujar_puntos_calibrados(frame)
         
-        if distancia < 50:  # 50 píxeles de tolerancia
-            if not self.punto_calibracion_activo:
-                self.punto_calibracion_activo = True
-                self.tiempo_en_punto = time.time()
+        # Si no hay punto activo, iniciar uno nuevo
+        if not self.punto_calibracion_activo:
+            self.punto_calibracion_activo = True
+            self.tiempo_en_punto = time.time()
+            self.posicion_cursor_proyeccion = cursor_actual
+        
+        # Mostrar progreso
+        tiempo_transcurrido = time.time() - self.tiempo_en_punto
+        progreso = min(tiempo_transcurrido / self.tiempo_requerido_calibracion, 1.0)
+        
+        # Dibujar barra de progreso
+        self._dibujar_progreso_calibracion(frame, (x_dedo, y_dedo), progreso)
+        
+        # Si se completó el tiempo requerido
+        if tiempo_transcurrido >= self.tiempo_requerido_calibracion:
+            # Guardar punto de la cámara y punto de proyección
+            self.puntos_camara.append((x_dedo, y_dedo))
+            self.puntos_proyeccion.append(self.posicion_cursor_proyeccion)
             
-            # Mostrar progreso
-            tiempo_transcurrido = time.time() - self.tiempo_en_punto
-            progreso = min(tiempo_transcurrido / self.tiempo_requerido_calibracion, 1.0)
+            logger.info(f"✓ PUNTO {self.esquina_actual + 1}/4 COMPLETADO: {self.nombres_esquinas[self.esquina_actual]}")
             
-            # Dibujar barra de progreso
-            self._dibujar_progreso_calibracion(frame, esquina_objetivo, progreso)
+            # Avanzar a la siguiente esquina
+            self.esquina_actual += 1
+            self.punto_calibracion_activo = False
             
-            # Si se completó el tiempo requerido
-            if tiempo_transcurrido >= self.tiempo_requerido_calibracion:
-                # Guardar punto
-                self.puntos_camara.append((x_dedo, y_dedo))
-                self.puntos_proyeccion.append(esquina_objetivo)
-                
-                logger.info(f"Punto {self.esquina_actual + 1}/4 calibrado")
-                
-                # Avanzar a la siguiente esquina
-                self.esquina_actual += 1
-                self.punto_calibracion_activo = False
-                
-                if self.esquina_actual >= 4:
-                    self._finalizar_calibracion()
+            if self.esquina_actual >= 4:
+                self._iniciar_confirmacion_calibracion()
+            else:
+                # Preparar para el siguiente punto
+                logger.info(f">>> SIGUIENTE: PUNTO {self.esquina_actual + 1}/4 - {self.nombres_esquinas[self.esquina_actual]} <<<")
+                logger.info("CONSEJO: Si el punto anterior no quedó bien, presiona 'U' para deshacerlo")
+    
+    def _dibujar_puntos_calibrados(self, frame: np.ndarray):
+        """Dibuja los puntos ya calibrados y las conexiones entre ellos"""
+        if len(self.puntos_camara) < 2:
+            return
+        
+        # Dibujar puntos calibrados
+        for i, punto in enumerate(self.puntos_camara):
+            cv2.circle(frame, punto, 15, (0, 255, 0), -1)
+            cv2.circle(frame, punto, 20, (0, 255, 0), 2)
+            cv2.putText(frame, f"{i+1}", (punto[0]-5, punto[1]+5), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, (255, 255, 255), 2)
+        
+        # Dibujar líneas entre puntos consecutivos
+        for i in range(len(self.puntos_camara) - 1):
+            cv2.line(frame, self.puntos_camara[i], self.puntos_camara[i+1], (0, 255, 0), 2)
+        
+        # Si tenemos 4 puntos, cerrar el rectángulo
+        if len(self.puntos_camara) >= 3:
+            cv2.line(frame, self.puntos_camara[0], self.puntos_camara[-1], (0, 255, 0), 2)
+            
+        # Si tenemos 4 puntos, dibujar el rectángulo completo
+        if len(self.puntos_camara) == 4:
+            cv2.line(frame, self.puntos_camara[3], self.puntos_camara[0], (0, 255, 0), 2)
+    
+    def deshacer_ultimo_punto(self):
+        """Deshace el último punto calibrado"""
+        if len(self.puntos_camara) > 0 and self.calibrando:
+            punto_eliminado = self.puntos_camara.pop()
+            self.puntos_proyeccion.pop()
+            self.esquina_actual -= 1
+            self.punto_calibracion_activo = False
+            logger.info(f"Punto {self.esquina_actual + 1} eliminado. Reposiciona en: {self.nombres_esquinas[self.esquina_actual]}")
         else:
-            # Reset si se aleja del punto
-            if self.punto_calibracion_activo:
-                self.punto_calibracion_activo = False
-                self.tiempo_en_punto = 0
+            logger.warning("No hay puntos para deshacer")
+    
+    def _es_gesto_indice_extendido(self, puntos) -> bool:
+        """Detecta si la mano está haciendo el gesto de índice extendido"""
+        try:
+            # Puntos clave de la mano
+            pulgar_tip = puntos[4]
+            pulgar_ip = puntos[3]
+            indice_tip = puntos[8]
+            indice_pip = puntos[6]
+            indice_mcp = puntos[5]
+            medio_tip = puntos[12]
+            medio_pip = puntos[10]
+            anular_tip = puntos[16]
+            anular_pip = puntos[14]
+            meñique_tip = puntos[20]
+            meñique_pip = puntos[18]
+            
+            # El índice debe estar extendido (tip más alto que pip)
+            indice_extendido = indice_tip[1] < indice_pip[1]
+            
+            # Los otros dedos deben estar doblados (tip más bajo que pip)
+            medio_doblado = medio_tip[1] > medio_pip[1]
+            anular_doblado = anular_tip[1] > anular_pip[1]
+            meñique_doblado = meñique_tip[1] > meñique_pip[1]
+            
+            return indice_extendido and medio_doblado and anular_doblado and meñique_doblado
+            
+        except:
+            return False
+    
+    def _es_gesto_seleccion(self, puntos) -> bool:
+        """Detecta si la mano está haciendo el gesto de selección (puño cerrado)"""
+        try:
+            # Puntos clave de la mano
+            indice_tip = puntos[8]
+            indice_pip = puntos[6]
+            medio_tip = puntos[12]
+            medio_pip = puntos[10]
+            anular_tip = puntos[16]
+            anular_pip = puntos[14]
+            meñique_tip = puntos[20]
+            meñique_pip = puntos[18]
+            
+            # Todos los dedos deben estar doblados (tip más bajo que pip)
+            indice_doblado = indice_tip[1] > indice_pip[1]
+            medio_doblado = medio_tip[1] > medio_pip[1]
+            anular_doblado = anular_tip[1] > anular_pip[1]
+            meñique_doblado = meñique_tip[1] > meñique_pip[1]
+            
+            return indice_doblado and medio_doblado and anular_doblado and meñique_doblado
+            
+        except:
+            return False
+    
+    def _dibujar_interfaz_calibracion(self, frame: np.ndarray, pos_dedo: tuple, pos_cursor: tuple):
+        """Dibuja la interfaz de calibración mejorada"""
+        altura, ancho = frame.shape[:2]
+        
+        # Panel de información superior
+        panel_alto = 100
+        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), (0, 0, 0), -1)
+        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), (0, 255, 255), 2)
+        
+        # Título
+        titulo = f"CALIBRACION - Punto {self.esquina_actual + 1}/4"
+        cv2.putText(frame, titulo, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        
+        # Instrucciones
+        esquina_nombre = self.nombres_esquinas[self.esquina_actual]
+        instruccion = f"Esquina: {esquina_nombre}"
+        cv2.putText(frame, instruccion, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        # Información de posición
+        info_pos = f"Cursor PC: {pos_cursor[0]}, {pos_cursor[1]}"
+        cv2.putText(frame, info_pos, (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Indicador en posición del dedo
+        cv2.circle(frame, pos_dedo, 30, (0, 255, 255), 3)
+        cv2.circle(frame, pos_dedo, 20, (0, 255, 255), 2)
+        cv2.circle(frame, pos_dedo, 10, (0, 255, 255), 1)
+        cv2.circle(frame, pos_dedo, 5, (0, 255, 255), -1)
+        
+        # Número de esquina
+        cv2.putText(frame, f"{self.esquina_actual + 1}", (pos_dedo[0] - 10, pos_dedo[1] + 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
     
     def _dibujar_indicador_calibracion(self, frame: np.ndarray, esquina: Tuple[int, int], numero: int):
         """Dibuja el indicador visual para la calibración"""
@@ -436,10 +593,10 @@ class DetectorGestos:
         # Definir botones con más funcionalidades
         botones = [
             {"texto": "SALIR", "x": ancho - 70, "color": (0, 0, 200), "accion": "salir"},
-            {"texto": "INTERFAZ", "x": ancho - 140, "color": (0, 150, 0), "accion": "interfaz"},
-            {"texto": "CALIBRAR", "x": ancho - 210, "color": (200, 100, 0), "accion": "calibrar"},
+            {"texto": "VER", "x": ancho - 140, "color": (0, 150, 0), "accion": "interfaz"},
+            {"texto": "CALIBR", "x": ancho - 210, "color": (200, 100, 0), "accion": "calibrar"},
             {"texto": "MODO", "x": ancho - 270, "color": (150, 150, 0), "accion": "modo"},
-            {"texto": "CAMARA", "x": ancho - 340, "color": (100, 0, 150), "accion": "camara"}
+            {"texto": "CAM", "x": ancho - 340, "color": (100, 0, 150), "accion": "camara"}
         ]
         
         # Dibujar botones
@@ -723,8 +880,10 @@ class DetectorGestos:
         altura, ancho = frame.shape[:2]
         
         # Si estamos calibrando, procesar calibración
-        if self.calibrando:
+        if self.calibrando and not self.esperando_confirmacion:
             self._procesar_calibracion(frame, landmarks)
+        elif self.esperando_confirmacion:
+            self._procesar_confirmacion_calibracion(frame, landmarks)
             return InfoGesto(gesto=TipoGesto.NINGUNO)
         
         # Convertir landmarks a coordenadas de píxeles
@@ -739,7 +898,17 @@ class DetectorGestos:
         indice_tip = puntos[8]
         medio_tip = puntos[12]
         
-        # Calcular distancias
+        # Verificar si es gesto de índice extendido (para navegación precisa)
+        if self._es_gesto_indice_extendido(puntos):
+            # Usar índice para cursor preciso
+            posicion_suavizada = self._suavizar_movimiento(indice_tip[0], indice_tip[1])
+            return InfoGesto(
+                gesto=TipoGesto.CURSOR,
+                posicion=posicion_suavizada,
+                confianza=0.95
+            )
+        
+        # Calcular distancias para gestos de pinza
         distancia_pulgar_indice = np.sqrt((pulgar_tip[0] - indice_tip[0])**2 + 
                                          (pulgar_tip[1] - indice_tip[1])**2)
         distancia_pulgar_medio = np.sqrt((pulgar_tip[0] - medio_tip[0])**2 + 
@@ -750,18 +919,29 @@ class DetectorGestos:
         
         if distancia_pulgar_indice < self.configuracion.distancia_pinza:
             # Click izquierdo o arrastrar
+            posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
+            
+            # Verificar si es click en botón de la interfaz
+            if self._es_click_en_boton(posicion_click, ancho):
+                return InfoGesto(
+                    gesto=TipoGesto.CLICK_IZQUIERDO,
+                    posicion=posicion_click,
+                    confianza=0.9,
+                    metadatos={"tipo": "boton"}
+                )
+            
             if self.arrastrando or tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
                 # Verificar doble click
                 if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
                     return InfoGesto(
                         gesto=TipoGesto.DOBLE_CLICK,
-                        posicion=pulgar_tip,
+                        posicion=posicion_click,
                         confianza=0.9
                     )
                 else:
                     return InfoGesto(
                         gesto=TipoGesto.CLICK_IZQUIERDO,
-                        posicion=pulgar_tip,
+                        posicion=posicion_click,
                         confianza=0.9
                     )
             else:
@@ -769,33 +949,39 @@ class DetectorGestos:
                 if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
                     return InfoGesto(
                         gesto=TipoGesto.DOBLE_CLICK,
-                        posicion=pulgar_tip,
+                        posicion=posicion_click,
                         confianza=0.9
                     )
                 else:
                     return InfoGesto(
                         gesto=TipoGesto.CLICK_IZQUIERDO,
-                        posicion=pulgar_tip,
+                        posicion=posicion_click,
                         confianza=0.9
                     )
         
         elif distancia_pulgar_medio < self.configuracion.distancia_pinza:
             # Click derecho
+            posicion_click = ((pulgar_tip[0] + medio_tip[0]) // 2, (pulgar_tip[1] + medio_tip[1]) // 2)
             return InfoGesto(
                 gesto=TipoGesto.CLICK_DERECHO,
-                posicion=pulgar_tip,
+                posicion=posicion_click,
                 confianza=0.9
             )
         
         else:
-            # Cursor (mano abierta)
-            # Usar el pulgar como punto de control del cursor
-            posicion_suavizada = self._suavizar_movimiento(pulgar_tip[0], pulgar_tip[1])
+            # Cursor (mano abierta) - usar el índice como punto de control
+            posicion_suavizada = self._suavizar_movimiento(indice_tip[0], indice_tip[1])
             return InfoGesto(
                 gesto=TipoGesto.CURSOR,
                 posicion=posicion_suavizada,
                 confianza=0.8
             )
+    
+    def _es_click_en_boton(self, posicion: tuple, ancho: int) -> bool:
+        """Verifica si el click es en la zona de botones"""
+        x, y = posicion
+        # Zona de botones está en la parte superior (y < 50) y lado derecho
+        return y < 50 and x > ancho - 350
     
     def _detectar_gestos_dos_manos(self, landmarks_list, frame: np.ndarray) -> InfoGesto:
         """Detecta gestos con dos manos (zoom)"""
@@ -853,6 +1039,12 @@ class DetectorGestos:
             self._mover_cursor(info_gesto.posicion)
         
         elif info_gesto.gesto == TipoGesto.CLICK_IZQUIERDO:
+            # Verificar si es click en botón
+            if info_gesto.metadatos and info_gesto.metadatos.get("tipo") == "boton" and info_gesto.posicion:
+                altura, ancho = 480, 640  # Dimensiones aproximadas del frame
+                if self._procesar_click_boton(info_gesto.posicion[0], info_gesto.posicion[1], ancho):
+                    return  # Si fue procesado como botón, no hacer click normal
+            
             self._realizar_click_izquierdo()
         
         elif info_gesto.gesto == TipoGesto.DOBLE_CLICK:
@@ -866,6 +1058,32 @@ class DetectorGestos:
         
         elif info_gesto.gesto == TipoGesto.ZOOM_OUT:
             self._realizar_zoom(self.configuracion.factor_zoom_out)
+    
+    def _procesar_click_boton(self, x: int, y: int, ancho: int) -> bool:
+        """Procesa clicks en botones y retorna True si fue procesado"""
+        if y < 50:  # Click en la barra superior
+            if ancho - 70 <= x <= ancho - 5:  # Botón SALIR
+                logger.info("Botón SALIR activado por gesto")
+                # Señalar que se debe salir
+                self.salir_solicitado = True
+                return True
+            elif ancho - 140 <= x <= ancho - 75:  # Botón INTERFAZ
+                logger.info("Botón INTERFAZ activado por gesto")
+                self.alternar_interfaz()
+                return True
+            elif ancho - 210 <= x <= ancho - 145:  # Botón CALIBRAR
+                logger.info("Botón CALIBRAR activado por gesto")
+                self._iniciar_calibracion()
+                return True
+            elif ancho - 270 <= x <= ancho - 215:  # Botón MODO
+                logger.info("Botón MODO activado por gesto")
+                self._cambiar_modo()
+                return True
+            elif ancho - 340 <= x <= ancho - 275:  # Botón CAMARA
+                logger.info("Botón CAMARA activado por gesto")
+                self._cambiar_camara()
+                return True
+        return False
     
     def _mover_cursor(self, posicion: Tuple[int, int]):
         """Mueve el cursor a la posición especificada"""
@@ -945,32 +1163,52 @@ class DetectorGestos:
         
         x, y = info_gesto.posicion
         
-        # Color según el tipo de gesto
+        # Color y texto según el tipo de gesto
         if info_gesto.gesto == TipoGesto.CURSOR:
-            color = self.configuracion.color_primario
-            texto = "CURSOR"
+            if info_gesto.confianza > 0.9:  # Índice extendido
+                color = (0, 255, 255)  # Amarillo
+                texto = "PRECISION"
+                radio = 15
+            else:  # Mano abierta
+                color = self.configuracion.color_primario
+                texto = "CURSOR"
+                radio = 20
         elif info_gesto.gesto == TipoGesto.CLICK_IZQUIERDO:
-            color = (255, 0, 0)
-            texto = "CLICK"
+            if info_gesto.metadatos and info_gesto.metadatos.get("tipo") == "boton":
+                color = (255, 0, 255)  # Magenta para botones
+                texto = "BOTON"
+            else:
+                color = (255, 0, 0)
+                texto = "CLICK"
+            radio = 25
         elif info_gesto.gesto == TipoGesto.DOBLE_CLICK:
             color = (255, 100, 0)
             texto = "DOBLE CLICK"
+            radio = 30
         elif info_gesto.gesto == TipoGesto.CLICK_DERECHO:
             color = (0, 0, 255)
             texto = "CLICK DER"
+            radio = 25
         elif info_gesto.gesto in [TipoGesto.ZOOM_IN, TipoGesto.ZOOM_OUT]:
             color = (255, 255, 0)
             texto = "ZOOM"
+            radio = 35
         else:
             return
         
         # Dibujar círculo en la posición
-        cv2.circle(frame, (x, y), 20, color, 3)
+        cv2.circle(frame, (x, y), radio, color, 3)
         cv2.circle(frame, (x, y), 5, color, -1)
         
         # Dibujar texto del gesto
-        cv2.putText(frame, texto, (x - 40, y - 30), cv2.FONT_HERSHEY_SIMPLEX, 
+        cv2.putText(frame, texto, (x - 40, y - radio - 10), cv2.FONT_HERSHEY_SIMPLEX, 
                    0.7, color, 2)
+        
+        # Añadir indicador de confianza
+        if info_gesto.confianza > 0:
+            confianza_texto = f"{int(info_gesto.confianza * 100)}%"
+            cv2.putText(frame, confianza_texto, (x - 20, y + radio + 25), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, color, 1)
     
     def manejar_teclas(self, tecla: int) -> bool:
         """
@@ -984,18 +1222,18 @@ class DetectorGestos:
         """
         if tecla == 27:  # ESC
             return False
-        elif tecla == ord('h') or tecla == ord('H'):
+        elif tecla == ord('v') or tecla == ord('V'):  # Ver/ocultar interfaz
             self.alternar_interfaz()
-        elif tecla == ord('c') or tecla == ord('C'):
-            self.alternar_modo_compacto()
         elif tecla == ord('m') or tecla == ord('M'):
             self._cambiar_modo()
         elif tecla == ord('q') or tecla == ord('Q'):
             return False
-        elif tecla == ord('n') or tecla == ord('N'):  # Cambiar cámara
+        elif tecla == ord('k') or tecla == ord('K'):  # Cambiar cámara
             self._cambiar_camara()
-        elif tecla == ord('b') or tecla == ord('B'):  # Calibrar
+        elif tecla == ord('c') or tecla == ord('C'):  # Calibración
             self._iniciar_calibracion()
+        elif tecla == ord('u') or tecla == ord('U'):  # Deshacer último punto
+            self.deshacer_ultimo_punto()
         elif tecla == ord('r') or tecla == ord('R'):
             # Reset zoom y calibración
             self.zoom_base = 1.0
@@ -1012,6 +1250,192 @@ class DetectorGestos:
         """Limpia recursos y finaliza el detector"""
         self.hands.close()
         logger.info("Detector de gestos finalizado")
+    
+    def _iniciar_confirmacion_calibracion(self):
+        """Inicia el proceso de confirmación de la calibración"""
+        self.esperando_confirmacion = True
+        self.mostrar_preview_pantalla = True
+        self.confirmacion_opcion = 0  # 0: Confirmar, 1: Recalibrar, 2: Cancelar
+        logger.info("=== CALIBRACIÓN COMPLETADA ===")
+        logger.info("Verifica que el rectángulo verde representa correctamente tu pantalla de proyección")
+        logger.info("Usa los gestos para elegir:")
+        logger.info("- Confirmar (guardar calibración)")
+        logger.info("- Recalibrar (empezar de nuevo)")
+        logger.info("- Cancelar (salir de calibración)")
+    
+    def _procesar_confirmacion_calibracion(self, frame: np.ndarray, landmarks):
+        """Procesa la confirmación de calibración"""
+        if not self.esperando_confirmacion:
+            return
+        
+        altura, ancho = frame.shape[:2]
+        
+        # Dibujar preview del área calibrada
+        if self.mostrar_preview_pantalla:
+            self._dibujar_preview_pantalla_calibrada(frame)
+        
+        # Dibujar interfaz de confirmación
+        self._dibujar_interfaz_confirmacion(frame)
+        
+        # Detectar gestos para navegación
+        puntos = []
+        for landmark in landmarks.landmark:
+            x = int(landmark.x * ancho)
+            y = int(landmark.y * altura)
+            puntos.append((x, y))
+        
+        # Detectar gesto de índice extendido para selección
+        if self._es_gesto_indice_extendido(puntos):
+            indice_tip = landmarks.landmark[8]
+            x_dedo = int(indice_tip.x * ancho)
+            y_dedo = int(indice_tip.y * altura)
+            
+            # Verificar en qué botón está el dedo
+            nueva_opcion = self._detectar_boton_confirmacion(x_dedo, y_dedo, frame)
+            if nueva_opcion != -1:
+                self.confirmacion_opcion = nueva_opcion
+        
+        # Detectar gesto de selección (puño cerrado) para confirmar opción
+        if self._es_gesto_seleccion(puntos):
+            if not hasattr(self, 'tiempo_seleccion_confirmacion'):
+                self.tiempo_seleccion_confirmacion = time.time()
+            
+            tiempo_transcurrido = time.time() - self.tiempo_seleccion_confirmacion
+            if tiempo_transcurrido >= 1.5:  # 1.5 segundos para confirmar
+                self._ejecutar_opcion_confirmacion()
+                delattr(self, 'tiempo_seleccion_confirmacion')
+        else:
+            if hasattr(self, 'tiempo_seleccion_confirmacion'):
+                delattr(self, 'tiempo_seleccion_confirmacion')
+    
+    def _dibujar_preview_pantalla_calibrada(self, frame: np.ndarray):
+        """Dibuja el preview del área calibrada como un rectángulo"""
+        if len(self.puntos_camara) >= 4:
+            # Dibujar rectángulo del área calibrada
+            pts = np.array(self.puntos_camara, np.int32)
+            pts = pts.reshape((-1, 1, 2))
+            
+            # Dibujar área rellena semi-transparente
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [pts], (0, 255, 0))
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+            
+            # Dibujar borde del rectángulo
+            cv2.polylines(frame, [pts], True, (0, 255, 0), 3)
+            
+            # Dibujar puntos numerados
+            for i, punto in enumerate(self.puntos_camara):
+                cv2.circle(frame, punto, 12, (0, 255, 0), -1)
+                cv2.circle(frame, punto, 15, (255, 255, 255), 2)
+                cv2.putText(frame, f"{i+1}", (punto[0]-5, punto[1]+5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+    
+    def _dibujar_interfaz_confirmacion(self, frame: np.ndarray):
+        """Dibuja la interfaz de confirmación de calibración"""
+        altura, ancho = frame.shape[:2]
+        
+        # Fondo para la interfaz
+        cv2.rectangle(frame, (10, altura-150), (ancho-10, altura-10), (50, 50, 50), -1)
+        cv2.rectangle(frame, (10, altura-150), (ancho-10, altura-10), (255, 255, 255), 2)
+        
+        # Título
+        cv2.putText(frame, "¿El area verde representa tu pantalla correctamente?", 
+                   (20, altura-120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Opciones con indicador de selección
+        opciones = ["CONFIRMAR", "RECALIBRAR", "CANCELAR"]
+        colores = [(0, 255, 0), (255, 255, 0), (0, 0, 255)]
+        
+        y_botones = altura - 80
+        espacio_boton = (ancho - 40) // 3
+        
+        for i, (opcion, color) in enumerate(zip(opciones, colores)):
+            x_boton = 20 + i * espacio_boton
+            
+            # Fondo del botón
+            color_fondo = color if self.confirmacion_opcion == i else (100, 100, 100)
+            cv2.rectangle(frame, (x_boton, y_botones-25), (x_boton + espacio_boton - 10, y_botones + 15), 
+                         color_fondo, -1)
+            cv2.rectangle(frame, (x_boton, y_botones-25), (x_boton + espacio_boton - 10, y_botones + 15), 
+                         (255, 255, 255), 2)
+            
+            # Texto del botón
+            color_texto = (0, 0, 0) if self.confirmacion_opcion == i else (255, 255, 255)
+            cv2.putText(frame, opcion, (x_boton + 10, y_botones), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_texto, 2)
+        
+        # Instrucciones
+        cv2.putText(frame, "Apunta con el dedo indice y cierra el puño para seleccionar", 
+                   (20, altura-40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    
+    def _detectar_boton_confirmacion(self, x: int, y: int, frame: np.ndarray) -> int:
+        """Detecta en qué botón de confirmación está el dedo"""
+        altura, ancho = frame.shape[:2]
+        y_botones = altura - 80
+        espacio_boton = (ancho - 40) // 3
+        
+        # Verificar si está en el área de botones
+        if y_botones - 25 <= y <= y_botones + 15:
+            for i in range(3):
+                x_boton = 20 + i * espacio_boton
+                if x_boton <= x <= x_boton + espacio_boton - 10:
+                    return i
+        return -1
+    
+    def _ejecutar_opcion_confirmacion(self):
+        """Ejecuta la opción seleccionada en la confirmación"""
+        if self.confirmacion_opcion == 0:  # Confirmar
+            self._confirmar_calibracion_final()
+        elif self.confirmacion_opcion == 1:  # Recalibrar
+            self._reiniciar_calibracion()
+        elif self.confirmacion_opcion == 2:  # Cancelar
+            self._cancelar_calibracion()
+    
+    def _confirmar_calibracion_final(self):
+        """Confirma y finaliza la calibración"""
+        try:
+            # Crear matriz de transformación
+            self.matriz_transformacion = cv2.getPerspectiveTransform(
+                np.float32(self.puntos_camara), 
+                np.float32(self.puntos_proyeccion)
+            )
+            
+            # Guardar calibración
+            self._guardar_calibracion()
+            
+            # Resetear estado
+            self.calibrando = False
+            self.esperando_confirmacion = False
+            self.mostrar_preview_pantalla = False
+            
+            logger.info("¡Calibración confirmada y guardada exitosamente!")
+            logger.info("El sistema está listo para detectar gestos")
+            
+        except Exception as e:
+            logger.error(f"Error al confirmar calibración: {e}")
+            self._cancelar_calibracion()
+    
+    def _reiniciar_calibracion(self):
+        """Reinicia el proceso de calibración"""
+        self.puntos_camara.clear()
+        self.puntos_proyeccion.clear()
+        self.esquina_actual = 0
+        self.punto_calibracion_activo = False
+        self.esperando_confirmacion = False
+        self.mostrar_preview_pantalla = False
+        logger.info("Reiniciando calibración...")
+        logger.info(f"Apunta al {self.nombres_esquinas[0]} y mantén el dedo índice extendido")
+    
+    def _cancelar_calibracion(self):
+        """Cancela el proceso de calibración"""
+        self.calibrando = False
+        self.esperando_confirmacion = False
+        self.mostrar_preview_pantalla = False
+        self.puntos_camara.clear()
+        self.puntos_proyeccion.clear()
+        self.esquina_actual = 0
+        self.punto_calibracion_activo = False
+        logger.info("Calibración cancelada")
 
 
 # ================================
@@ -1029,15 +1453,12 @@ class SistemaControlGestos:
         self.dispositivos_disponibles = self._detectar_camaras()
     
     def _detectar_camaras(self) -> List[int]:
-        """Detecta las cámaras disponibles en el sistema"""
-        dispositivos = []
-        for i in range(5):  # Probar hasta 5 dispositivos
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                dispositivos.append(i)
-                cap.release()
-        logger.info(f"Cámaras detectadas: {dispositivos}")
-        return dispositivos if dispositivos else [0]
+        """Detecta las cámaras disponibles en el sistema - Modo simplificado para macOS"""
+        # En macOS, simplemente probar cámaras comunes sin verificación profunda
+        # para evitar problemas de permisos
+        dispositivos = [0, 1]  # Cámara integrada y posibles externas
+        logger.info(f"Usando configuración simplificada de cámaras: {dispositivos}")
+        return dispositivos
     
     def cambiar_camara(self):
         """Cambia a la siguiente cámara disponible"""
@@ -1062,23 +1483,42 @@ class SistemaControlGestos:
             logger.info("Solo hay una cámara disponible")
     
     def inicializar_camara(self, dispositivo: int = 0) -> bool:
-        """Inicializa la cámara"""
+        """Inicializa la cámara - Versión simplificada para macOS"""
         try:
+            logger.info(f"Intentando abrir cámara {dispositivo}")
             self.cap = cv2.VideoCapture(dispositivo)
-            if not self.cap.isOpened():
-                logger.error(f"No se pudo abrir la cámara {dispositivo}")
-                return False
             
-            # Configurar propiedades de la cámara
+            if not self.cap.isOpened():
+                logger.warning(f"No se pudo abrir cámara {dispositivo}, probando alternativas...")
+                
+                # Probar dispositivos alternativos
+                for alt_dispositivo in [1, 0, 2]:
+                    if alt_dispositivo != dispositivo:
+                        logger.info(f"Probando cámara {alt_dispositivo}")
+                        self.cap = cv2.VideoCapture(alt_dispositivo)
+                        if self.cap.isOpened():
+                            self.dispositivo_camara_actual = alt_dispositivo
+                            logger.info(f"✅ Cámara {alt_dispositivo} abierta exitosamente")
+                            break
+                        self.cap.release()
+                
+                if not self.cap.isOpened():
+                    logger.error("❌ No se pudo abrir ninguna cámara")
+                    return False
+            else:
+                self.dispositivo_camara_actual = dispositivo
+                logger.info(f"✅ Cámara {dispositivo} abierta exitosamente")
+            
+            # Configurar propiedades básicas de la cámara
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
             
-            logger.info(f"Cámara {dispositivo} inicializada correctamente")
             return True
             
         except Exception as e:
             logger.error(f"Error inicializando cámara: {e}")
+            return False
             return False
     
     def ejecutar(self):
@@ -1090,17 +1530,22 @@ class SistemaControlGestos:
         logger.info("Sistema de control por gestos iniciado")
         logger.info("CONTROLES:")
         logger.info("  ESC/Q - Salir")
-        logger.info("  H - Alternar interfaz")
-        logger.info("  C - Modo compacto")
+        logger.info("  V - Ver/ocultar interfaz")
         logger.info("  M - Cambiar modo (Pantalla/Mesa)")
-        logger.info("  N - Cambiar cámara")
-        logger.info("  B - Calibrar (modo mesa)")
+        logger.info("  K - Cambiar cámara")
+        logger.info("  C - Calibración (modo mesa)")
+        logger.info("  U - Deshacer último punto (durante calibración)")
         logger.info("  R - Reset")
         
         self.ejecutandose = True
         
         try:
             while self.ejecutandose:
+                # Verificar si se solicita salir por gesto
+                if self.detector.salir_solicitado:
+                    logger.info("Salida solicitada por gesto")
+                    break
+                
                 # Verificar si se solicita cambio de cámara
                 if self.detector.cambiar_camara_solicitado:
                     self.cambiar_camara()
