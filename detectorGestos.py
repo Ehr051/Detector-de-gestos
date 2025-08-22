@@ -113,7 +113,22 @@ class DetectorGestos:
         
         # Cargar configuración
         self.config = self._cargar_configuracion()
-        self.configuracion = ConfiguracionSistema(**self.config.get('sistema', {}))
+        
+        # Extraer solo los campos válidos para ConfiguracionSistema
+        sistema_config = self.config.get('sistema', {})
+        config_valida = {
+            'min_detection_confidence': self.config.get('deteccion', {}).get('min_detection_confidence', 0.7),
+            'min_tracking_confidence': self.config.get('deteccion', {}).get('min_tracking_confidence', 0.5),
+            'max_num_hands': self.config.get('deteccion', {}).get('max_num_hands', 2),
+            'distancia_pinza': self.config.get('gestos', {}).get('distancia_pinza', 40),
+            'factor_zoom_in': self.config.get('gestos', {}).get('factor_zoom_in', 1.5),
+            'factor_zoom_out': self.config.get('gestos', {}).get('factor_zoom_out', 0.7),
+            'suavizado_movimiento': self.config.get('gestos', {}).get('suavizado_movimiento', 5),
+            'doble_click_ventana': self.config.get('gestos', {}).get('doble_click_ventana', 0.5),
+            'tiempo_calibracion': self.config.get('gestos', {}).get('tiempo_calibracion', 3.0),
+            'mostrar_por_defecto': self.config.get('interfaz', {}).get('mostrar_por_defecto', True)
+        }
+        self.configuracion = ConfiguracionSistema(**config_valida)
         
         # Inicializar MediaPipe Hands
         self.mp_hands = mp.solutions.hands
