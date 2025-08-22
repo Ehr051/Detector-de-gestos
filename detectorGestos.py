@@ -184,6 +184,13 @@ class DetectorGestos:
         # Variables para doble click
         self.doble_click_ventana = self.configuracion.doble_click_ventana
         
+        # Variable para cambio de cámara
+        self.cambiar_camara_solicitado = False
+        
+        # Cargar calibración existente si está en modo mesa
+        if self.modo == ModoOperacion.MESA:
+            self._cargar_calibracion()
+        
         logger.info(f"Detector de gestos inicializado en modo: {modo}")
     
     def _cargar_configuracion(self) -> Dict[str, Any]:
@@ -226,47 +233,275 @@ class DetectorGestos:
         modo = "compacta" if self.interfaz_compacta else "completa"
         logger.info(f"Interfaz {modo}")
     
-    def dibujar_interfaz_principal(self, frame: np.ndarray) -> np.ndarray:
-        """Dibuja la interfaz principal del sistema"""
-        if not self.mostrar_interfaz:
-            return frame
+    def _cambiar_modo(self):
+        """Cambia entre modo pantalla y mesa"""
+        if self.modo == ModoOperacion.PANTALLA:
+            self.modo = ModoOperacion.MESA
+            logger.info("Cambiado a modo MESA (proyección)")
+        else:
+            self.modo = ModoOperacion.PANTALLA
+            # Resetear calibración al cambiar a pantalla
+            self.puntos_camara = []
+            self.puntos_proyeccion = []
+            logger.info("Cambiado a modo PANTALLA (control directo)")
+    
+    def _cambiar_camara(self):
+        """Solicita cambio de cámara al sistema principal"""
+        # Esta función será manejada por el sistema principal
+        logger.info("Solicitado cambio de cámara")
+        self.cambiar_camara_solicitado = True
+    
+    def _iniciar_calibracion(self):
+        """Inicia el proceso de calibración para modo mesa"""
+        if self.modo == ModoOperacion.MESA:
+            self.calibrando = True
+            self.puntos_camara = []
+            self.puntos_proyeccion = []
+            self.esquina_actual = 0
+            self.tiempo_en_punto = 0
+            self.punto_calibracion_activo = False
             
+            # Definir las esquinas de la proyección (orden: TL, TR, BR, BL)
+            self.esquinas_proyeccion = [
+                (50, 50),    # Top-Left
+                (self.ancho_pantalla - 50, 50),    # Top-Right  
+                (self.ancho_pantalla - 50, self.alto_pantalla - 50),    # Bottom-Right
+                (50, self.alto_pantalla - 50)     # Bottom-Left
+            ]
+            
+            logger.info("Calibración iniciada. Toca las esquinas de la proyección en orden.")
+        else:
+            logger.warning("La calibración solo está disponible en modo MESA")
+    
+    def _procesar_calibracion(self, frame: np.ndarray, landmarks):
+        """Procesa el estado de calibración cuando está activa"""
+        if not self.calibrando or self.esquina_actual >= 4:
+            return
+        
         altura, ancho = frame.shape[:2]
         
-        # Botón para mostrar/ocultar interfaz (siempre visible)
-        boton_x, boton_y = ancho - 80, 10
-        boton_ancho, boton_alto = 70, 30
+        # Obtener posición del dedo índice
+        indice_tip = landmarks.landmark[8]
+        x_dedo = int(indice_tip.x * ancho)
+        y_dedo = int(indice_tip.y * altura)
         
-        # Dibujar botón
-        cv2.rectangle(frame, (boton_x, boton_y), (boton_x + boton_ancho, boton_y + boton_alto), 
-                     self.configuracion.color_secundario, -1)
-        cv2.rectangle(frame, (boton_x, boton_y), (boton_x + boton_ancho, boton_y + boton_alto), 
-                     (0, 0, 0), 2)
+        # Esquina objetivo actual
+        esquina_objetivo = self.esquinas_proyeccion[self.esquina_actual]
         
-        texto_boton = "OCULTAR" if self.mostrar_interfaz else "MOSTRAR"
-        cv2.putText(frame, texto_boton, (boton_x + 5, boton_y + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+        # Dibujar indicador de calibración
+        self._dibujar_indicador_calibracion(frame, esquina_objetivo, self.esquina_actual)
         
-        if self.interfaz_compacta:
-            self._dibujar_interfaz_compacta(frame)
+        # Verificar si el dedo está cerca de la esquina objetivo
+        distancia = np.sqrt((x_dedo - esquina_objetivo[0])**2 + (y_dedo - esquina_objetivo[1])**2)
+        
+        if distancia < 50:  # 50 píxeles de tolerancia
+            if not self.punto_calibracion_activo:
+                self.punto_calibracion_activo = True
+                self.tiempo_en_punto = time.time()
+            
+            # Mostrar progreso
+            tiempo_transcurrido = time.time() - self.tiempo_en_punto
+            progreso = min(tiempo_transcurrido / self.tiempo_requerido_calibracion, 1.0)
+            
+            # Dibujar barra de progreso
+            self._dibujar_progreso_calibracion(frame, esquina_objetivo, progreso)
+            
+            # Si se completó el tiempo requerido
+            if tiempo_transcurrido >= self.tiempo_requerido_calibracion:
+                # Guardar punto
+                self.puntos_camara.append((x_dedo, y_dedo))
+                self.puntos_proyeccion.append(esquina_objetivo)
+                
+                logger.info(f"Punto {self.esquina_actual + 1}/4 calibrado")
+                
+                # Avanzar a la siguiente esquina
+                self.esquina_actual += 1
+                self.punto_calibracion_activo = False
+                
+                if self.esquina_actual >= 4:
+                    self._finalizar_calibracion()
         else:
-            self._dibujar_interfaz_completa(frame)
+            # Reset si se aleja del punto
+            if self.punto_calibracion_activo:
+                self.punto_calibracion_activo = False
+                self.tiempo_en_punto = 0
+    
+    def _dibujar_indicador_calibracion(self, frame: np.ndarray, esquina: Tuple[int, int], numero: int):
+        """Dibuja el indicador visual para la calibración"""
+        x, y = esquina
+        
+        # Círculo grande de objetivo
+        cv2.circle(frame, (x, y), 40, (0, 255, 255), 3)
+        cv2.circle(frame, (x, y), 30, (0, 255, 255), 2)
+        cv2.circle(frame, (x, y), 20, (0, 255, 255), 1)
+        
+        # Número de esquina
+        cv2.putText(frame, f"{numero + 1}", (x - 10, y + 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                   1, (0, 255, 255), 3)
+        
+        # Instrucciones
+        nombres_esquinas = ["Superior Izquierda", "Superior Derecha", "Inferior Derecha", "Inferior Izquierda"]
+        instruccion = f"Toca esquina {nombres_esquinas[numero]} y mantén 3 segundos"
+        cv2.putText(frame, instruccion, (50, frame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, 
+                   0.8, (0, 255, 255), 2)
+    
+    def _dibujar_progreso_calibracion(self, frame: np.ndarray, esquina: Tuple[int, int], progreso: float):
+        """Dibuja la barra de progreso de calibración"""
+        x, y = esquina
+        
+        # Círculo de progreso
+        radio = 50
+        angulo = int(360 * progreso)
+        
+        # Dibujar arco de progreso
+        if progreso > 0:
+            # Crear puntos para el arco
+            puntos = []
+            for i in range(0, angulo, 5):
+                rad = np.radians(i - 90)  # Empezar desde arriba
+                px = int(x + radio * np.cos(rad))
+                py = int(y + radio * np.sin(rad))
+                puntos.append((px, py))
+            
+            if len(puntos) > 1:
+                for i in range(len(puntos) - 1):
+                    cv2.line(frame, puntos[i], puntos[i + 1], (0, 255, 0), 5)
+        
+        # Texto de progreso
+        porcentaje = int(progreso * 100)
+        cv2.putText(frame, f"{porcentaje}%", (x - 20, y - 60), cv2.FONT_HERSHEY_SIMPLEX, 
+                   0.8, (0, 255, 0), 2)
+    
+    def _finalizar_calibracion(self):
+        """Finaliza el proceso de calibración y calcula la matriz de transformación"""
+        if len(self.puntos_camara) >= 4 and len(self.puntos_proyeccion) >= 4:
+            # Convertir a arrays numpy
+            puntos_src = np.array(self.puntos_camara, dtype=np.float32)
+            puntos_dst = np.array(self.puntos_proyeccion, dtype=np.float32)
+            
+            # Calcular matriz de transformación
+            self.matriz_transformacion = cv2.getPerspectiveTransform(puntos_src, puntos_dst)
+            
+            self.calibrando = False
+            logger.info("Calibración completada exitosamente")
+            
+            # Guardar calibración a archivo
+            self._guardar_calibracion()
+        else:
+            logger.error("Error en calibración: puntos insuficientes")
+    
+    def _guardar_calibracion(self):
+        """Guarda la matriz de calibración a un archivo"""
+        try:
+            np.save('calibracion_matriz.npy', self.matriz_transformacion)
+            logger.info("Matriz de calibración guardada")
+        except Exception as e:
+            logger.error(f"Error guardando calibración: {e}")
+    
+    def _cargar_calibracion(self):
+        """Carga una calibración previamente guardada"""
+        try:
+            if Path('calibracion_matriz.npy').exists():
+                self.matriz_transformacion = np.load('calibracion_matriz.npy')
+                logger.info("Calibración cargada desde archivo")
+                return True
+        except Exception as e:
+            logger.error(f"Error cargando calibración: {e}")
+        return False
+    
+    def dibujar_interfaz_principal(self, frame: np.ndarray) -> np.ndarray:
+        """Dibuja la interfaz principal del sistema"""
+        altura, ancho = frame.shape[:2]
+        
+        # Siempre dibujar la barra superior con botones
+        self._dibujar_barra_superior(frame)
+        
+        if self.mostrar_interfaz:
+            if self.interfaz_compacta:
+                self._dibujar_interfaz_compacta(frame)
+            else:
+                self._dibujar_interfaz_completa(frame)
         
         return frame
+    
+    def _dibujar_barra_superior(self, frame: np.ndarray):
+        """Dibuja la barra superior con botones de control"""
+        altura, ancho = frame.shape[:2]
+        barra_alto = 50
+        
+        # Fondo de la barra
+        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (40, 40, 40), -1)
+        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (100, 100, 100), 2)
+        
+        # Definir botones con más funcionalidades
+        botones = [
+            {"texto": "SALIR", "x": ancho - 70, "color": (0, 0, 200), "accion": "salir"},
+            {"texto": "INTERFAZ", "x": ancho - 140, "color": (0, 150, 0), "accion": "interfaz"},
+            {"texto": "CALIBRAR", "x": ancho - 210, "color": (200, 100, 0), "accion": "calibrar"},
+            {"texto": "MODO", "x": ancho - 270, "color": (150, 150, 0), "accion": "modo"},
+            {"texto": "CAMARA", "x": ancho - 340, "color": (100, 0, 150), "accion": "camara"}
+        ]
+        
+        # Dibujar botones
+        for boton in botones:
+            x = boton["x"]
+            # Fondo del botón
+            cv2.rectangle(frame, (x, 5), (x + 65, 40), boton["color"], -1)
+            cv2.rectangle(frame, (x, 5), (x + 65, 40), (255, 255, 255), 1)
+            # Texto del botón
+            cv2.putText(frame, boton["texto"], (x + 5, 28), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.35, (255, 255, 255), 1)
+        
+        # Información básica en la izquierda
+        info_texto = f"Detector v3.0 - {self.modo.value.title()}"
+        cv2.putText(frame, info_texto, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                   0.6, (255, 255, 255), 1)
+        
+        # Información adicional
+        if self.modo == ModoOperacion.MESA:
+            puntos_cal = len(self.puntos_camara)
+            estado_cal = f"Calibracion: {puntos_cal}/4"
+            color_cal = (0, 255, 0) if puntos_cal >= 4 else (255, 100, 0)
+            cv2.putText(frame, estado_cal, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, color_cal, 1)
+    
+    def manejar_click_boton(self, x: int, y: int, ancho: int) -> bool:
+        """Maneja clicks en los botones de la barra superior"""
+        if y < 50:  # Click en la barra superior
+            if ancho - 70 <= x <= ancho - 5:  # Botón SALIR
+                return False
+            elif ancho - 140 <= x <= ancho - 75:  # Botón INTERFAZ
+                self.alternar_interfaz()
+            elif ancho - 210 <= x <= ancho - 145:  # Botón CALIBRAR
+                self._iniciar_calibracion()
+            elif ancho - 270 <= x <= ancho - 215:  # Botón MODO
+                self._cambiar_modo()
+            elif ancho - 340 <= x <= ancho - 275:  # Botón CAMARA
+                self._cambiar_camara()
+        return True
     
     def _dibujar_interfaz_compacta(self, frame: np.ndarray):
         """Dibuja una interfaz compacta para presentaciones"""
         altura, ancho = frame.shape[:2]
         
-        # Panel compacto en la parte superior
+        # Panel compacto debajo de la barra
+        panel_y = 50
         panel_alto = 60
-        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), (0, 0, 0), -1)
-        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), self.configuracion.color_primario, 2)
+        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (20, 20, 20), -1)
+        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (100, 100, 100), 1)
         
         # Información básica
-        info_texto = f"Modo: {self.modo.value.title()} | Gesto: {self.ultimo_gesto.value.replace('_', ' ').title()}"
-        cv2.putText(frame, info_texto, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
-                   self.configuracion.color_secundario, 2)
+        gesto_texto = self.ultimo_gesto.value.replace('_', ' ').title()
+        info_texto = f"Gesto Actual: {gesto_texto}"
+        cv2.putText(frame, info_texto, (10, panel_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
+                   (255, 255, 255), 2)
+        
+        # Estado de calibración si aplica
+        if self.modo == ModoOperacion.MESA:
+            puntos_cal = len(self.puntos_camara)
+            estado_cal = f"Calibracion: {puntos_cal}/4 puntos"
+            cv2.putText(frame, estado_cal, (10, panel_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, (200, 200, 200), 1)
         
         # Estado de calibración si aplica
         if self.modo == ModoOperacion.MESA:
@@ -275,32 +510,95 @@ class DetectorGestos:
                        0.5, self.configuracion.color_secundario, 1)
     
     def _dibujar_interfaz_completa(self, frame: np.ndarray):
-        """Dibuja la interfaz completa con todos los controles"""
+        """Dibuja la interfaz completa con información detallada"""
         altura, ancho = frame.shape[:2]
         
-        # Panel superior - Información del sistema
-        panel_alto = 120
-        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), (0, 0, 0), -1)
-        cv2.rectangle(frame, (0, 0), (ancho, panel_alto), self.configuracion.color_primario, 2)
+        # Panel principal debajo de la barra
+        panel_y = 50
+        panel_alto = 180
+        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (30, 30, 30), -1)
+        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (100, 100, 100), 2)
         
-        # Título principal
-        cv2.putText(frame, "DETECTOR DE GESTOS v3.0", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                   1, self.configuracion.color_secundario, 2)
-        
-        # Modo actual
-        cv2.putText(frame, f"Modo: {self.modo.value.upper()}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.7, self.configuracion.color_secundario, 2)
+        # Información principal
+        y_pos = panel_y + 30
         
         # Gesto actual
         gesto_texto = self.ultimo_gesto.value.replace('_', ' ').title()
-        cv2.putText(frame, f"Gesto: {gesto_texto}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.7, self.configuracion.color_secundario, 2)
+        cv2.putText(frame, f"Gesto Actual: {gesto_texto}", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
-        # Panel lateral derecho con controles
-        self._dibujar_panel_controles(frame)
+        y_pos += 35
+        # Información del cursor
+        cv2.putText(frame, f"Cursor: ({self.cursor_x}, {self.cursor_y})", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
-        # Panel inferior con información de gestos
-        self._dibujar_panel_gestos(frame)
+        y_pos += 25
+        # Resolución de pantalla
+        cv2.putText(frame, f"Pantalla: {self.ancho_pantalla}x{self.alto_pantalla}", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Información de calibración (si es modo mesa)
+        if self.modo == ModoOperacion.MESA:
+            y_pos += 35
+            puntos_cal = len(self.puntos_camara)
+            cv2.putText(frame, f"Calibracion: {puntos_cal}/4 puntos completados", (20, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+            
+            if puntos_cal < 4:
+                y_pos += 25
+                cv2.putText(frame, "Presiona CALIBRAR para configurar proyeccion", (20, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 1)
+        
+        # Panel lateral con controles
+        self._dibujar_panel_controles_simple(frame)
+    
+    def _dibujar_panel_controles_simple(self, frame: np.ndarray):
+        """Dibuja un panel de controles simplificado"""
+        altura, ancho = frame.shape[:2]
+        panel_ancho = 280
+        panel_x = ancho - panel_ancho
+        panel_y = 50
+        panel_alto = 180
+        
+        # Fondo del panel
+        cv2.rectangle(frame, (panel_x, panel_y), (ancho, panel_y + panel_alto), (30, 30, 30), -1)
+        cv2.rectangle(frame, (panel_x, panel_y), (ancho, panel_y + panel_alto), (100, 100, 100), 2)
+        
+        # Título
+        y_pos = panel_y + 30
+        cv2.putText(frame, "CONTROLES DE TECLADO:", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Lista de controles
+        controles = [
+            "ESC/Q - Salir del programa",
+            "H - Mostrar/Ocultar interfaz", 
+            "C - Modo compacto",
+            "M - Cambiar modo (Pantalla/Mesa)",
+            "N - Cambiar camara",
+            "B - Calibrar (solo modo mesa)",
+            "R - Reset calibracion/zoom",
+            "",
+            "GESTOS DISPONIBLES:",
+            "Mano abierta - Mover cursor",
+            "Pulgar + Indice - Click izquierdo",
+            "Doble pinza rapida - Doble click",
+            "Pulgar + Medio - Click derecho",
+            "Dos manos - Zoom in/out"
+        ]
+        
+        y_pos += 25
+        for control in controles:
+            if control == "":
+                y_pos += 10
+                continue
+            elif control.startswith("GESTOS"):
+                cv2.putText(frame, control, (panel_x + 15, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            else:
+                cv2.putText(frame, control, (panel_x + 15, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            y_pos += 15
     
     def _dibujar_panel_controles(self, frame: np.ndarray):
         """Dibuja el panel de controles lateral"""
@@ -423,6 +721,11 @@ class DetectorGestos:
     def _detectar_gestos_una_mano(self, landmarks, frame: np.ndarray) -> InfoGesto:
         """Detecta gestos con una sola mano"""
         altura, ancho = frame.shape[:2]
+        
+        # Si estamos calibrando, procesar calibración
+        if self.calibrando:
+            self._procesar_calibracion(frame, landmarks)
+            return InfoGesto(gesto=TipoGesto.NINGUNO)
         
         # Convertir landmarks a coordenadas de píxeles
         puntos = []
@@ -566,13 +869,17 @@ class DetectorGestos:
     
     def _mover_cursor(self, posicion: Tuple[int, int]):
         """Mueve el cursor a la posición especificada"""
-        if self.modo == ModoOperacion.MESA:
+        if self.modo == ModoOperacion.MESA and len(self.puntos_camara) >= 4:
             # Transformar coordenadas para modo mesa
             posicion = self._transformar_coordenadas(posicion)
         else:
             # Mapear directamente a la pantalla
-            x_pantalla = int(posicion[0] * self.ancho_pantalla / 640)  # Asumiendo 640px de ancho de cámara
-            y_pantalla = int(posicion[1] * self.alto_pantalla / 480)   # Asumiendo 480px de alto de cámara
+            # Obtener dimensiones reales del frame
+            ancho_frame = 640  # Se puede obtener dinámicamente
+            alto_frame = 480
+            
+            x_pantalla = int(posicion[0] * self.ancho_pantalla / ancho_frame)
+            y_pantalla = int(posicion[1] * self.alto_pantalla / alto_frame)
             posicion = (x_pantalla, y_pantalla)
         
         try:
@@ -681,10 +988,23 @@ class DetectorGestos:
             self.alternar_interfaz()
         elif tecla == ord('c') or tecla == ord('C'):
             self.alternar_modo_compacto()
+        elif tecla == ord('m') or tecla == ord('M'):
+            self._cambiar_modo()
+        elif tecla == ord('q') or tecla == ord('Q'):
+            return False
+        elif tecla == ord('n') or tecla == ord('N'):  # Cambiar cámara
+            self._cambiar_camara()
+        elif tecla == ord('b') or tecla == ord('B'):  # Calibrar
+            self._iniciar_calibracion()
         elif tecla == ord('r') or tecla == ord('R'):
-            # Reset zoom
+            # Reset zoom y calibración
             self.zoom_base = 1.0
-            logger.info("Zoom reseteado")
+            if self.modo == ModoOperacion.MESA:
+                self.puntos_camara = []
+                self.puntos_proyeccion = []
+                self.matriz_transformacion = np.eye(3)
+                logger.info("Calibración reseteada")
+            logger.info("Sistema reseteado")
         
         return True
     
@@ -705,6 +1025,41 @@ class SistemaControlGestos:
         self.detector = DetectorGestos(modo)
         self.cap = None
         self.ejecutandose = False
+        self.dispositivo_camara_actual = 0
+        self.dispositivos_disponibles = self._detectar_camaras()
+    
+    def _detectar_camaras(self) -> List[int]:
+        """Detecta las cámaras disponibles en el sistema"""
+        dispositivos = []
+        for i in range(5):  # Probar hasta 5 dispositivos
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                dispositivos.append(i)
+                cap.release()
+        logger.info(f"Cámaras detectadas: {dispositivos}")
+        return dispositivos if dispositivos else [0]
+    
+    def cambiar_camara(self):
+        """Cambia a la siguiente cámara disponible"""
+        if len(self.dispositivos_disponibles) > 1:
+            indice_actual = self.dispositivos_disponibles.index(self.dispositivo_camara_actual)
+            siguiente_indice = (indice_actual + 1) % len(self.dispositivos_disponibles)
+            nuevo_dispositivo = self.dispositivos_disponibles[siguiente_indice]
+            
+            # Liberar cámara actual
+            if self.cap:
+                self.cap.release()
+            
+            # Inicializar nueva cámara
+            if self.inicializar_camara(nuevo_dispositivo):
+                self.dispositivo_camara_actual = nuevo_dispositivo
+                logger.info(f"Cambiado a cámara {nuevo_dispositivo}")
+            else:
+                # Si falla, volver a la anterior
+                self.inicializar_camara(self.dispositivo_camara_actual)
+                logger.error(f"Error cambiando a cámara {nuevo_dispositivo}")
+        else:
+            logger.info("Solo hay una cámara disponible")
     
     def inicializar_camara(self, dispositivo: int = 0) -> bool:
         """Inicializa la cámara"""
@@ -728,17 +1083,29 @@ class SistemaControlGestos:
     
     def ejecutar(self):
         """Ejecuta el bucle principal del sistema"""
-        if not self.inicializar_camara():
+        if not self.inicializar_camara(self.dispositivo_camara_actual):
             logger.error("No se pudo inicializar la cámara")
             return False
         
         logger.info("Sistema de control por gestos iniciado")
-        logger.info("Presiona H para alternar interfaz, C para modo compacto, ESC para salir")
+        logger.info("CONTROLES:")
+        logger.info("  ESC/Q - Salir")
+        logger.info("  H - Alternar interfaz")
+        logger.info("  C - Modo compacto")
+        logger.info("  M - Cambiar modo (Pantalla/Mesa)")
+        logger.info("  N - Cambiar cámara")
+        logger.info("  B - Calibrar (modo mesa)")
+        logger.info("  R - Reset")
         
         self.ejecutandose = True
         
         try:
             while self.ejecutandose:
+                # Verificar si se solicita cambio de cámara
+                if self.detector.cambiar_camara_solicitado:
+                    self.cambiar_camara()
+                    self.detector.cambiar_camara_solicitado = False
+                
                 ret, frame = self.cap.read()
                 if not ret:
                     logger.error("Error capturando frame de la cámara")
@@ -749,6 +1116,12 @@ class SistemaControlGestos:
                 
                 # Procesar frame
                 frame_procesado, info_gesto = self.detector.procesar_frame(frame)
+                
+                # Mostrar información de cámara actual
+                altura, ancho = frame_procesado.shape[:2]
+                info_camara = f"Camara {self.dispositivo_camara_actual} | {len(self.dispositivos_disponibles)} disponibles"
+                cv2.putText(frame_procesado, info_camara, (ancho - 300, altura - 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
                 
                 # Mostrar resultado
                 cv2.imshow('Detector de Gestos v3.0', frame_procesado)
