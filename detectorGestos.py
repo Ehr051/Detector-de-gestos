@@ -185,7 +185,6 @@ class DetectorGestos:
         self.ultimo_gesto = TipoGesto.NINGUNO
         self.tiempo_gesto = time.time()
         self.mostrar_interfaz = self.configuracion.mostrar_por_defecto
-        self.interfaz_compacta = False  # Modo compacto
         
         # Variables para doble click
         self.doble_click_ventana = self.configuracion.doble_click_ventana
@@ -235,12 +234,6 @@ class DetectorGestos:
         self.mostrar_interfaz = not self.mostrar_interfaz
         estado = "visible" if self.mostrar_interfaz else "oculta"
         logger.info(f"Interfaz {estado}")
-    
-    def alternar_modo_compacto(self):
-        """Alterna entre modo interfaz normal y compacta"""
-        self.interfaz_compacta = not self.interfaz_compacta
-        modo = "compacta" if self.interfaz_compacta else "completa"
-        logger.info(f"Interfaz {modo}")
     
     def _cambiar_modo(self):
         """Cambia entre modo pantalla y mesa"""
@@ -570,101 +563,40 @@ class DetectorGestos:
         """Dibuja la interfaz principal del sistema"""
         altura, ancho = frame.shape[:2]
         
-        # Siempre dibujar la barra superior con botones
-        self._dibujar_barra_superior(frame)
+        # Solo dibujar la información básica, sin botones falsos
+        self._dibujar_informacion_sistema(frame)
         
         if self.mostrar_interfaz:
-            if self.interfaz_compacta:
-                self._dibujar_interfaz_compacta(frame)
-            else:
-                self._dibujar_interfaz_completa(frame)
+            self._dibujar_interfaz_completa(frame)
         
         return frame
     
-    def _dibujar_barra_superior(self, frame: np.ndarray):
-        """Dibuja la barra superior con botones de control"""
+    def _dibujar_informacion_sistema(self, frame: np.ndarray):
+        """Dibuja información básica del sistema sin botones falsos"""
         altura, ancho = frame.shape[:2]
-        barra_alto = 50
+        barra_alto = 40
         
-        # Fondo de la barra
-        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (40, 40, 40), -1)
-        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (100, 100, 100), 2)
+        # Fondo simple para información
+        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (30, 30, 30), -1)
+        cv2.rectangle(frame, (0, 0), (ancho, barra_alto), (80, 80, 80), 1)
         
-        # Definir botones con más funcionalidades
-        botones = [
-            {"texto": "SALIR", "x": ancho - 70, "color": (0, 0, 200), "accion": "salir"},
-            {"texto": "VER", "x": ancho - 140, "color": (0, 150, 0), "accion": "interfaz"},
-            {"texto": "CALIBR", "x": ancho - 210, "color": (200, 100, 0), "accion": "calibrar"},
-            {"texto": "MODO", "x": ancho - 270, "color": (150, 150, 0), "accion": "modo"},
-            {"texto": "CAM", "x": ancho - 340, "color": (100, 0, 150), "accion": "camara"}
-        ]
-        
-        # Dibujar botones
-        for boton in botones:
-            x = boton["x"]
-            # Fondo del botón
-            cv2.rectangle(frame, (x, 5), (x + 65, 40), boton["color"], -1)
-            cv2.rectangle(frame, (x, 5), (x + 65, 40), (255, 255, 255), 1)
-            # Texto del botón
-            cv2.putText(frame, boton["texto"], (x + 5, 28), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.35, (255, 255, 255), 1)
-        
-        # Información básica en la izquierda
-        info_texto = f"Detector v3.0 - {self.modo.value.title()}"
-        cv2.putText(frame, info_texto, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.6, (255, 255, 255), 1)
-        
-        # Información adicional
-        if self.modo == ModoOperacion.MESA:
-            puntos_cal = len(self.puntos_camara)
-            estado_cal = f"Calibracion: {puntos_cal}/4"
-            color_cal = (0, 255, 0) if puntos_cal >= 4 else (255, 100, 0)
-            cv2.putText(frame, estado_cal, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.5, color_cal, 1)
-    
-    def manejar_click_boton(self, x: int, y: int, ancho: int) -> bool:
-        """Maneja clicks en los botones de la barra superior"""
-        if y < 50:  # Click en la barra superior
-            if ancho - 70 <= x <= ancho - 5:  # Botón SALIR
-                return False
-            elif ancho - 140 <= x <= ancho - 75:  # Botón INTERFAZ
-                self.alternar_interfaz()
-            elif ancho - 210 <= x <= ancho - 145:  # Botón CALIBRAR
-                self._iniciar_calibracion()
-            elif ancho - 270 <= x <= ancho - 215:  # Botón MODO
-                self._cambiar_modo()
-            elif ancho - 340 <= x <= ancho - 275:  # Botón CAMARA
-                self._cambiar_camara()
-        return True
-    
-    def _dibujar_interfaz_compacta(self, frame: np.ndarray):
-        """Dibuja una interfaz compacta para presentaciones"""
-        altura, ancho = frame.shape[:2]
-        
-        # Panel compacto debajo de la barra
-        panel_y = 50
-        panel_alto = 60
-        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (20, 20, 20), -1)
-        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (100, 100, 100), 1)
-        
-        # Información básica
-        gesto_texto = self.ultimo_gesto.value.replace('_', ' ').title()
-        info_texto = f"Gesto Actual: {gesto_texto}"
-        cv2.putText(frame, info_texto, (10, panel_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
-                   (255, 255, 255), 2)
+        # Información básica del sistema
+        info_texto = f"Detector de Gestos v3.0 - {self.modo.value.title()}"
+        cv2.putText(frame, info_texto, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 
+                   0.7, (255, 255, 255), 2)
         
         # Estado de calibración si aplica
         if self.modo == ModoOperacion.MESA:
             puntos_cal = len(self.puntos_camara)
-            estado_cal = f"Calibracion: {puntos_cal}/4 puntos"
-            cv2.putText(frame, estado_cal, (10, panel_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.5, (200, 200, 200), 1)
-        
-        # Estado de calibración si aplica
-        if self.modo == ModoOperacion.MESA:
-            estado_cal = "Calibrado" if len(self.puntos_camara) >= 4 else "Sin calibrar"
-            cv2.putText(frame, f"Calibracion: {estado_cal}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.5, self.configuracion.color_secundario, 1)
+            if puntos_cal >= 4:
+                estado_cal = "Calibrado ✓"
+                color_cal = (0, 255, 0)
+            else:
+                estado_cal = f"Sin calibrar ({puntos_cal}/4)"
+                color_cal = (255, 100, 0)
+            
+            cv2.putText(frame, estado_cal, (ancho - 200, 25), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, color_cal, 2)
     
     def _dibujar_interfaz_completa(self, frame: np.ndarray):
         """Dibuja la interfaz completa con información detallada"""
@@ -729,11 +661,10 @@ class DetectorGestos:
         # Lista de controles
         controles = [
             "ESC/Q - Salir del programa",
-            "H - Mostrar/Ocultar interfaz", 
-            "C - Modo compacto",
+            "V - Mostrar/Ocultar interfaz", 
             "M - Cambiar modo (Pantalla/Mesa)",
-            "N - Cambiar camara",
-            "B - Calibrar (solo modo mesa)",
+            "K - Cambiar camara",
+            "C - Calibrar (solo modo mesa)",
             "R - Reset calibracion/zoom",
             "",
             "GESTOS DISPONIBLES:",
@@ -773,11 +704,7 @@ class DetectorGestos:
                    0.7, self.configuracion.color_secundario, 2)
         
         y_pos += 40
-        cv2.putText(frame, "H - Alternar interfaz", (panel_x + 10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.5, (255, 255, 255), 1)
-        
-        y_pos += 25
-        cv2.putText(frame, "C - Modo compacto", (panel_x + 10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+        cv2.putText(frame, "V - Alternar interfaz", (panel_x + 10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
                    0.5, (255, 255, 255), 1)
         
         y_pos += 25
@@ -921,15 +848,6 @@ class DetectorGestos:
             # Click izquierdo o arrastrar
             posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
             
-            # Verificar si es click en botón de la interfaz
-            if self._es_click_en_boton(posicion_click, ancho):
-                return InfoGesto(
-                    gesto=TipoGesto.CLICK_IZQUIERDO,
-                    posicion=posicion_click,
-                    confianza=0.9,
-                    metadatos={"tipo": "boton"}
-                )
-            
             if self.arrastrando or tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
                 # Verificar doble click
                 if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
@@ -976,12 +894,6 @@ class DetectorGestos:
                 posicion=posicion_suavizada,
                 confianza=0.8
             )
-    
-    def _es_click_en_boton(self, posicion: tuple, ancho: int) -> bool:
-        """Verifica si el click es en la zona de botones"""
-        x, y = posicion
-        # Zona de botones está en la parte superior (y < 50) y lado derecho
-        return y < 50 and x > ancho - 350
     
     def _detectar_gestos_dos_manos(self, landmarks_list, frame: np.ndarray) -> InfoGesto:
         """Detecta gestos con dos manos (zoom)"""
@@ -1039,12 +951,6 @@ class DetectorGestos:
             self._mover_cursor(info_gesto.posicion)
         
         elif info_gesto.gesto == TipoGesto.CLICK_IZQUIERDO:
-            # Verificar si es click en botón
-            if info_gesto.metadatos and info_gesto.metadatos.get("tipo") == "boton" and info_gesto.posicion:
-                altura, ancho = 480, 640  # Dimensiones aproximadas del frame
-                if self._procesar_click_boton(info_gesto.posicion[0], info_gesto.posicion[1], ancho):
-                    return  # Si fue procesado como botón, no hacer click normal
-            
             self._realizar_click_izquierdo()
         
         elif info_gesto.gesto == TipoGesto.DOBLE_CLICK:
@@ -1058,32 +964,6 @@ class DetectorGestos:
         
         elif info_gesto.gesto == TipoGesto.ZOOM_OUT:
             self._realizar_zoom(self.configuracion.factor_zoom_out)
-    
-    def _procesar_click_boton(self, x: int, y: int, ancho: int) -> bool:
-        """Procesa clicks en botones y retorna True si fue procesado"""
-        if y < 50:  # Click en la barra superior
-            if ancho - 70 <= x <= ancho - 5:  # Botón SALIR
-                logger.info("Botón SALIR activado por gesto")
-                # Señalar que se debe salir
-                self.salir_solicitado = True
-                return True
-            elif ancho - 140 <= x <= ancho - 75:  # Botón INTERFAZ
-                logger.info("Botón INTERFAZ activado por gesto")
-                self.alternar_interfaz()
-                return True
-            elif ancho - 210 <= x <= ancho - 145:  # Botón CALIBRAR
-                logger.info("Botón CALIBRAR activado por gesto")
-                self._iniciar_calibracion()
-                return True
-            elif ancho - 270 <= x <= ancho - 215:  # Botón MODO
-                logger.info("Botón MODO activado por gesto")
-                self._cambiar_modo()
-                return True
-            elif ancho - 340 <= x <= ancho - 275:  # Botón CAMARA
-                logger.info("Botón CAMARA activado por gesto")
-                self._cambiar_camara()
-                return True
-        return False
     
     def _mover_cursor(self, posicion: Tuple[int, int]):
         """Mueve el cursor a la posición especificada"""
@@ -1174,12 +1054,8 @@ class DetectorGestos:
                 texto = "CURSOR"
                 radio = 20
         elif info_gesto.gesto == TipoGesto.CLICK_IZQUIERDO:
-            if info_gesto.metadatos and info_gesto.metadatos.get("tipo") == "boton":
-                color = (255, 0, 255)  # Magenta para botones
-                texto = "BOTON"
-            else:
-                color = (255, 0, 0)
-                texto = "CLICK"
+            color = (255, 0, 0)  # Rojo para click izquierdo
+            texto = "CLICK"
             radio = 25
         elif info_gesto.gesto == TipoGesto.DOBLE_CLICK:
             color = (255, 100, 0)
