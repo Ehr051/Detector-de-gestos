@@ -148,6 +148,12 @@ class DetectorGestos:
         # Variables de estado para gestos
         self.cursor_x, self.cursor_y = 0, 0
         self.arrastrando = False
+        
+        # Variables para calibración automática de distancia
+        self.tamaño_mano_referencia = None  # Tamaño promedio de la mano
+        self.factor_distancia = 1.0  # Factor de ajuste basado en distancia
+        self.historial_tamaños_mano = []  # Últimos 10 tamaños para promedio
+        self.distancia_pinza_adaptativa = self.configuracion.distancia_pinza
         self.ultimo_click_tiempo = 0
         self.click_count = 0
         self.gesto_anterior = TipoGesto.NINGUNO
@@ -696,6 +702,85 @@ class DetectorGestos:
         except Exception as e:
             logger.error(f"Error configurando transformación automática: {e}")
     
+    def _calcular_tamaño_mano(self, landmarks, frame_shape) -> float:
+        """Calcula el tamaño de la mano basado en la distancia entre puntos clave"""
+        try:
+            altura, ancho = frame_shape[:2]
+            
+            # Convertir landmarks a coordenadas
+            puntos = []
+            for landmark in landmarks.landmark:
+                x = int(landmark.x * ancho)
+                y = int(landmark.y * altura)
+                puntos.append((x, y))
+            
+            # Calcular distancia entre muñeca y dedo medio
+            muneca = puntos[0]  # Wrist
+            medio_tip = puntos[12]  # Middle finger tip
+            
+            distancia = np.sqrt((muneca[0] - medio_tip[0])**2 + (muneca[1] - medio_tip[1])**2)
+            return distancia
+            
+        except Exception as e:
+            logger.error(f"Error calculando tamaño de mano: {e}")
+            return 100.0  # Valor por defecto
+    
+    def _calibrar_distancia_automatica(self, landmarks, frame_shape):
+        """Calibra automáticamente la distancia basada en el tamaño de la mano"""
+        tamaño_actual = self._calcular_tamaño_mano(landmarks, frame_shape)
+        
+        # Agregar al historial (máximo 10 mediciones)
+        self.historial_tamaños_mano.append(tamaño_actual)
+        if len(self.historial_tamaños_mano) > 10:
+            self.historial_tamaños_mano.pop(0)
+        
+        # Calcular tamaño promedio
+        tamaño_promedio = sum(self.historial_tamaños_mano) / len(self.historial_tamaños_mano)
+        
+        # Si es la primera vez, establecer como referencia
+        if self.tamaño_mano_referencia is None:
+            self.tamaño_mano_referencia = tamaño_promedio
+            logger.info(f"🤚 Tamaño de mano referencia establecido: {self.tamaño_mano_referencia:.1f}")
+        
+        # Calcular factor de distancia (tamaño más pequeño = más lejos)
+        if self.tamaño_mano_referencia > 0:
+            self.factor_distancia = tamaño_promedio / self.tamaño_mano_referencia
+            
+            # Ajustar distancia de pinza adaptativa
+            self.distancia_pinza_adaptativa = self.configuracion.distancia_pinza * self.factor_distancia
+            
+            # Limitar valores extremos
+            self.distancia_pinza_adaptativa = max(20, min(100, self.distancia_pinza_adaptativa))
+    
+    def _mostrar_deteccion_automatica(self, frame: np.ndarray):
+        """Implementar rectángulos en esquinas para detección automática (modo backup)"""
+        altura, ancho = frame.shape[:2]
+        
+        # Tamaño de los rectángulos de esquina
+        rect_size = 50
+        color = (0, 255, 255)  # Amarillo
+        thickness = 3
+        
+        # Rectángulo superior izquierda
+        cv2.rectangle(frame, (20, 20), (20 + rect_size, 20 + rect_size), color, thickness)
+        cv2.putText(frame, "1", (35, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        # Rectángulo superior derecha
+        cv2.rectangle(frame, (ancho - 70, 20), (ancho - 20, 20 + rect_size), color, thickness)
+        cv2.putText(frame, "2", (ancho - 55, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        # Rectángulo inferior derecha
+        cv2.rectangle(frame, (ancho - 70, altura - 70), (ancho - 20, altura - 20), color, thickness)
+        cv2.putText(frame, "3", (ancho - 55, altura - 35), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        # Rectángulo inferior izquierda
+        cv2.rectangle(frame, (20, altura - 70), (20 + rect_size, altura - 20), color, thickness)
+        cv2.putText(frame, "4", (35, altura - 35), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        
+        # Texto informativo
+        cv2.putText(frame, "MODO DETECCION: Apunta a rectangulos 1-2-3-4", 
+                   (ancho//2 - 200, altura - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    
     def dibujar_interfaz_principal(self, frame: np.ndarray) -> np.ndarray:
         """Dibuja la interfaz principal del sistema"""
         altura, ancho = frame.shape[:2]
@@ -769,6 +854,13 @@ class DetectorGestos:
             puntos_cal = len(self.puntos_camara)
             cv2.putText(frame, f"Calibracion: {puntos_cal}/4 puntos completados", (20, y_pos), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+            
+            # Información de calibración automática de distancia
+            if hasattr(self, 'factor_distancia') and self.factor_distancia:
+                y_pos += 25
+                color_factor = (0, 255, 0) if 0.8 <= self.factor_distancia <= 1.2 else (255, 100, 0)
+                cv2.putText(frame, f"Distancia: {self.factor_distancia:.2f}x (Adaptativo: {int(self.distancia_pinza_adaptativa)}px)", 
+                           (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_factor, 1)
             
             if puntos_cal < 4:
                 y_pos += 25
@@ -963,6 +1055,9 @@ class DetectorGestos:
         """Detecta gestos con una sola mano"""
         altura, ancho = frame.shape[:2]
         
+        # 🔧 CALIBRACIÓN AUTOMÁTICA DE DISTANCIA
+        self._calibrar_distancia_automatica(landmarks, (altura, ancho))
+        
         # Si estamos calibrando, procesar calibración
         if self.calibrando and not self.esperando_confirmacion:
             self._procesar_calibracion(frame, landmarks)
@@ -1001,7 +1096,7 @@ class DetectorGestos:
         # Determinar gesto
         tiempo_actual = time.time()
         
-        if distancia_pulgar_indice < self.configuracion.distancia_pinza:
+        if distancia_pulgar_indice < self.distancia_pinza_adaptativa:
             # Click izquierdo o arrastrar
             posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
             
@@ -1034,7 +1129,7 @@ class DetectorGestos:
                         confianza=0.9
                     )
         
-        elif distancia_pulgar_medio < self.configuracion.distancia_pinza:
+        elif distancia_pulgar_medio < self.distancia_pinza_adaptativa:
             # Click derecho
             posicion_click = ((pulgar_tip[0] + medio_tip[0]) // 2, (pulgar_tip[1] + medio_tip[1]) // 2)
             return InfoGesto(
