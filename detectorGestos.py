@@ -209,6 +209,12 @@ class DetectorGestos:
         self._detectar_proyeccion_automatica = True
         self.area_proyeccion = None  # (x, y, width, height) del área detectada
         self.marcos_sin_deteccion = 0
+        
+        # Variables de confirmación automática
+        self.area_pendiente_confirmacion = None
+        self.tiempo_deteccion = 0
+        self.TIEMPO_CONFIRMACION = 3.0  # 3 segundos para confirmar
+        
         logger.info(f"Modo {self.modo.value.upper()} activado - Detección automática de proyección habilitada")
         
         logger.info(f"Detector de gestos inicializado en modo: {self.modo.value}")
@@ -847,67 +853,124 @@ class DetectorGestos:
                        0.6, color_cal, 2)
     
     def _dibujar_interfaz_completa(self, frame: np.ndarray):
-        """Dibuja la interfaz completa con información detallada"""
+        """Dibuja la interfaz completa con información detallada en panel lateral derecho"""
         altura, ancho = frame.shape[:2]
         
-        # Panel principal debajo de la barra
-        panel_y = 50
-        panel_alto = 180
-        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (30, 30, 30), -1)
-        cv2.rectangle(frame, (0, panel_y), (ancho, panel_y + panel_alto), (100, 100, 100), 2)
+        # 📊 PANEL LATERAL DERECHO REORGANIZADO
+        panel_ancho = 320
+        panel_x = ancho - panel_ancho
         
-        # Información principal
-        y_pos = panel_y + 30
+        # Fondo del panel derecho completo
+        cv2.rectangle(frame, (panel_x, 0), (ancho, altura), (25, 25, 25), -1)
+        cv2.rectangle(frame, (panel_x, 0), (ancho, altura), (80, 80, 80), 2)
         
-        # Gesto actual
-        gesto_texto = self.ultimo_gesto.value.replace('_', ' ').title()
-        cv2.putText(frame, f"Gesto Actual: {gesto_texto}", (20, y_pos), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        # Título principal
+        y_pos = 30
+        cv2.putText(frame, "DETECTOR GESTOS v3.0", (panel_x + 10, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        y_pos += 35
-        # Información del cursor
-        cv2.putText(frame, f"Cursor: ({self.cursor_x}, {self.cursor_y})", (20, y_pos), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        # Separador
+        y_pos += 10
+        cv2.line(frame, (panel_x + 10, y_pos), (ancho - 10, y_pos), (100, 100, 100), 1)
+        
+        # INFORMACIÓN DEL SISTEMA
+        y_pos += 30
+        
+        # INFORMACIÓN DEL SISTEMA
+        y_pos += 30
+        cv2.putText(frame, f"Modo: {self.modo.value.upper()}", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 200, 255), 1)
         
         y_pos += 25
-        # Resolución de pantalla
-        cv2.putText(frame, f"Pantalla: {self.ancho_pantalla}x{self.alto_pantalla}", (20, y_pos), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        gesto_texto = self.ultimo_gesto.value.replace('_', ' ').title()
+        cv2.putText(frame, f"Gesto: {gesto_texto}", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
-        # Información de calibración (si es modo mesa)
+        y_pos += 25
+        cv2.putText(frame, f"Cursor: ({self.cursor_x}, {self.cursor_y})", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        y_pos += 25
+        cv2.putText(frame, f"Pantalla: {self.ancho_pantalla}x{self.alto_pantalla}", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # INFORMACIÓN DE CALIBRACIÓN (MODO MESA)
         if self.modo == ModoOperacion.MESA:
             y_pos += 35
+            cv2.putText(frame, "CALIBRACION:", (panel_x + 15, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+            
+            y_pos += 25
             puntos_cal = len(self.puntos_camara)
-            cv2.putText(frame, f"Calibracion: {puntos_cal}/4 puntos completados", (20, y_pos), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+            cv2.putText(frame, f"Manual: {puntos_cal}/4 puntos", (panel_x + 15, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
             
             # Estado de detección automática
-            y_pos += 25
+            y_pos += 20
             if hasattr(self, '_detectar_proyeccion_automatica') and self._detectar_proyeccion_automatica:
                 if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
                     estado_auto = "Auto: DETECTADO ✓"
                     color_auto = (0, 255, 0)
                 else:
-                    estado_auto = f"Auto: Buscando... ({getattr(self, 'marcos_sin_deteccion', 0)}/100)"
+                    frames = getattr(self, 'marcos_sin_deteccion', 0)
+                    estado_auto = f"Auto: Buscando... ({frames}/100)"
                     color_auto = (255, 200, 0)
             else:
-                estado_auto = "Auto: DESACTIVADO (Usa 'A')"
+                estado_auto = "Auto: DESACTIVADO"
                 color_auto = (100, 100, 100)
             
-            cv2.putText(frame, estado_auto, (20, y_pos), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_auto, 1)
+            cv2.putText(frame, estado_auto, (panel_x + 15, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_auto, 1)
             
             # Información de calibración automática de distancia
             if hasattr(self, 'factor_distancia') and self.factor_distancia:
-                y_pos += 25
+                y_pos += 20
                 color_factor = (0, 255, 0) if 0.8 <= self.factor_distancia <= 1.2 else (255, 100, 0)
-                cv2.putText(frame, f"Distancia: {self.factor_distancia:.2f}x (Adaptativo: {int(self.distancia_pinza_adaptativa)}px)", 
-                           (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_factor, 1)
-            
-            if puntos_cal < 4:
-                y_pos += 25
-                cv2.putText(frame, "Presiona CALIBRAR para configurar proyeccion", (20, y_pos), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 1)
+                cv2.putText(frame, f"Distancia: {self.factor_distancia:.2f}x", (panel_x + 15, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_factor, 1)
+                y_pos += 20
+                cv2.putText(frame, f"Umbral: {int(self.distancia_pinza_adaptativa)}px", (panel_x + 15, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_factor, 1)
+        
+        # CONTROLES DE TECLADO
+        y_pos += 45
+        cv2.putText(frame, "CONTROLES:", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        controles = [
+            "ESC/Q - Salir",
+            "V - Mostrar/Ocultar UI", 
+            "M - Modo (Pantalla/Mesa)",
+            "K - Cambiar camara",
+            "C - Calibracion manual",
+            "A - Deteccion automatica",
+            "R - Reset sistema"
+        ]
+        
+        y_pos += 25
+        for control in controles:
+            cv2.putText(frame, control, (panel_x + 15, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            y_pos += 18
+        
+        # GESTOS DISPONIBLES
+        y_pos += 15
+        cv2.putText(frame, "GESTOS:", (panel_x + 15, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        gestos = [
+            "🖐️ Mano abierta - Cursor",
+            "👌 Pulgar+Indice - Click L",
+            "🤏 Pulgar+Medio - Click R", 
+            "⚡ Doble pinza - Doble click",
+            "👊👊 Dos manos - Zoom"
+        ]
+        
+        y_pos += 25
+        for gesto in gestos:
+            cv2.putText(frame, gesto, (panel_x + 15, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 255, 150), 1)
+            y_pos += 18
         
         # Panel lateral con controles
         self._dibujar_panel_controles_simple(frame)
@@ -1040,12 +1103,8 @@ class DetectorGestos:
         
         # DETECCIÓN AUTOMÁTICA DE PROYECCIÓN (solo en modo MESA)
         if hasattr(self, '_detectar_proyeccion_automatica') and self._detectar_proyeccion_automatica and self.modo == ModoOperacion.MESA:
-            # Mostrar información de depuración
-            cv2.putText(frame, "DETECCION AUTO ACTIVA", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
             if not hasattr(self, 'area_proyeccion') or self.area_proyeccion is None:
-                cv2.putText(frame, "Buscando proyeccion...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-                
                 # Intentar detectar área de proyección cada 10 frames
                 if not hasattr(self, '_frame_count_deteccion'):
                     self._frame_count_deteccion = 0
@@ -1061,8 +1120,6 @@ class DetectorGestos:
                         self._configurar_transformacion_automatica()
                     else:
                         logger.debug(f"⚪ No se detectó proyección en frame {self._frame_count_deteccion}")
-            else:
-                cv2.putText(frame, f"Proyeccion detectada!", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             # Dibujar área de proyección si está detectada
             if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
@@ -1153,6 +1210,17 @@ class DetectorGestos:
             # Click izquierdo o arrastrar
             posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
             
+            # 🚫 FILTRAR CLICKS FUERA DEL ÁREA DE PROYECCIÓN
+            if (self.modo == ModoOperacion.MESA and 
+                hasattr(self, 'area_proyeccion') and self.area_proyeccion and
+                not self._punto_dentro_proyeccion(posicion_click[0], posicion_click[1])):
+                # Si está fuera del área, retornar cursor normal
+                return InfoGesto(
+                    gesto=TipoGesto.CURSOR,
+                    posicion=indice_tip,
+                    confianza=0.7
+                )
+            
             if self.arrastrando or tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
                 # Verificar doble click
                 if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
@@ -1185,6 +1253,18 @@ class DetectorGestos:
         elif distancia_pulgar_medio < self.distancia_pinza_adaptativa:
             # Click derecho
             posicion_click = ((pulgar_tip[0] + medio_tip[0]) // 2, (pulgar_tip[1] + medio_tip[1]) // 2)
+            
+            # 🚫 FILTRAR CLICKS DERECHOS FUERA DEL ÁREA DE PROYECCIÓN
+            if (self.modo == ModoOperacion.MESA and 
+                hasattr(self, 'area_proyeccion') and self.area_proyeccion and
+                not self._punto_dentro_proyeccion(posicion_click[0], posicion_click[1])):
+                # Si está fuera del área, retornar cursor normal
+                return InfoGesto(
+                    gesto=TipoGesto.CURSOR,
+                    posicion=indice_tip,
+                    confianza=0.7
+                )
+            
             return InfoGesto(
                 gesto=TipoGesto.CLICK_DERECHO,
                 posicion=posicion_click,
