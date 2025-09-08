@@ -209,9 +209,9 @@ class DetectorGestos:
         self._detectar_proyeccion_automatica = True
         self.area_proyeccion = None  # (x, y, width, height) del área detectada
         self.marcos_sin_deteccion = 0
-        logger.info(f"Modo {modo.value.upper()} activado - Detección automática de proyección habilitada")
+        logger.info(f"Modo {self.modo.value.upper()} activado - Detección automática de proyección habilitada")
         
-        logger.info(f"Detector de gestos inicializado en modo: {modo}")
+        logger.info(f"Detector de gestos inicializado en modo: {self.modo.value}")
     
     def _cargar_configuracion(self) -> Dict[str, Any]:
         """Carga la configuración desde el archivo config.json"""
