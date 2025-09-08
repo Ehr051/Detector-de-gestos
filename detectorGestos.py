@@ -198,6 +198,11 @@ class DetectorGestos:
         # Cargar calibración existente si está en modo mesa
         if self.modo == ModoOperacion.MESA:
             self._cargar_calibracion()
+            # Intentar detección automática de proyección
+            self._detectar_proyeccion_automatica = True
+            self.area_proyeccion = None  # (x, y, width, height) del área detectada
+            self.marcos_sin_deteccion = 0
+            logger.info("Modo MESA activado - Detección automática de proyección habilitada")
         
         logger.info(f"Detector de gestos inicializado en modo: {modo}")
     
@@ -559,6 +564,138 @@ class DetectorGestos:
             logger.error(f"Error cargando calibración: {e}")
         return False
     
+    def _detectar_area_proyeccion(self, frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Detecta automáticamente el área rectangular de proyección en la imagen
+        Busca rectángulos grandes y brillantes que podrían ser una proyección
+        """
+        try:
+            # Convertir a escala de grises
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # Aplicar filtro gaussiano para suavizar
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            
+            # Detectar bordes con Canny
+            edges = cv2.Canny(blurred, 50, 150)
+            
+            # Encontrar contornos
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return None
+            
+            # Buscar el contorno más grande que sea rectangular
+            for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+                area = cv2.contourArea(contour)
+                
+                # Filtrar contornos muy pequeños (menos del 10% de la imagen)
+                min_area = (frame.shape[0] * frame.shape[1]) * 0.1
+                if area < min_area:
+                    continue
+                
+                # Aproximar el contorno a un polígono
+                epsilon = 0.02 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                
+                # Si es aproximadamente un rectángulo (4 vértices)
+                if len(approx) == 4:
+                    # Verificar que sea relativamente rectangular
+                    x, y, w, h = cv2.boundingRect(approx)
+                    aspect_ratio = w / h
+                    
+                    # Aceptar ratios entre 1:3 y 3:1 (rectangulares razonables)
+                    if 0.3 <= aspect_ratio <= 3.0 and w > 100 and h > 100:
+                        return (x, y, w, h)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error detectando área de proyección: {e}")
+            return None
+    
+    def _dibujar_area_proyeccion(self, frame: np.ndarray):
+        """Dibuja el área de proyección detectada con un recuadro verde"""
+        if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
+            x, y, w, h = self.area_proyeccion
+            
+            # Dibujar recuadro verde brillante
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+            
+            # Dibujar las esquinas con círculos
+            cv2.circle(frame, (x, y), 8, (0, 255, 0), -1)  # Superior izquierda
+            cv2.circle(frame, (x + w, y), 8, (0, 255, 0), -1)  # Superior derecha
+            cv2.circle(frame, (x + w, y + h), 8, (0, 255, 0), -1)  # Inferior derecha
+            cv2.circle(frame, (x, y + h), 8, (0, 255, 0), -1)  # Inferior izquierda
+            
+            # Texto informativo
+            cv2.putText(frame, "AREA DE PROYECCION", (x, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    def _punto_dentro_proyeccion(self, x: int, y: int) -> bool:
+        """Verifica si un punto está dentro del área de proyección detectada"""
+        if not hasattr(self, 'area_proyeccion') or not self.area_proyeccion:
+            return True  # Si no hay área definida, permitir todos los puntos
+        
+        px, py, pw, ph = self.area_proyeccion
+        return px <= x <= (px + pw) and py <= y <= (py + ph)
+    
+    def _mapear_coordenadas_proyeccion(self, x: int, y: int) -> Tuple[int, int]:
+        """
+        Mapea coordenadas dentro del área de proyección a coordenadas de pantalla
+        """
+        if not hasattr(self, 'area_proyeccion') or not self.area_proyeccion:
+            return x, y
+        
+        px, py, pw, ph = self.area_proyeccion
+        
+        # Normalizar coordenadas dentro del área de proyección (0.0 a 1.0)
+        norm_x = (x - px) / pw if pw > 0 else 0
+        norm_y = (y - py) / ph if ph > 0 else 0
+        
+        # Limitar a rango válido
+        norm_x = max(0.0, min(1.0, norm_x))
+        norm_y = max(0.0, min(1.0, norm_y))
+        
+        # Mapear a coordenadas de pantalla
+        screen_x = int(norm_x * pyautogui.size().width)
+        screen_y = int(norm_y * pyautogui.size().height)
+        
+        return screen_x, screen_y
+    
+    def _configurar_transformacion_automatica(self):
+        """Configura la matriz de transformación automáticamente basada en el área detectada"""
+        if not hasattr(self, 'area_proyeccion') or not self.area_proyeccion:
+            return
+        
+        try:
+            x, y, w, h = self.area_proyeccion
+            
+            # Definir puntos de la cámara (área detectada)
+            self.puntos_camara = [
+                (x, y),          # Superior izquierda
+                (x + w, y),      # Superior derecha  
+                (x + w, y + h),  # Inferior derecha
+                (x, y + h)       # Inferior izquierda
+            ]
+            
+            # Definir puntos de proyección (pantalla completa)
+            screen_width, screen_height = pyautogui.size()
+            self.puntos_proyeccion = [
+                (0, 0),                              # Superior izquierda
+                (screen_width, 0),                   # Superior derecha
+                (screen_width, screen_height),       # Inferior derecha
+                (0, screen_height)                   # Inferior izquierda
+            ]
+            
+            # Calcular matriz de transformación
+            self._calcular_matriz_transformacion()
+            
+            logger.info("✅ Transformación automática configurada para área de proyección")
+            
+        except Exception as e:
+            logger.error(f"Error configurando transformación automática: {e}")
+    
     def dibujar_interfaz_principal(self, frame: np.ndarray) -> np.ndarray:
         """Dibuja la interfaz principal del sistema"""
         altura, ancho = frame.shape[:2]
@@ -766,6 +903,26 @@ class DetectorGestos:
         # Detectar manos
         resultados = self.hands.process(rgb_frame)
         
+        # DETECCIÓN AUTOMÁTICA DE PROYECCIÓN (solo en modo mesa)
+        if hasattr(self, '_detectar_proyeccion_automatica') and self._detectar_proyeccion_automatica and self.modo == ModoOperacion.MESA:
+            if not hasattr(self, 'area_proyeccion') or self.area_proyeccion is None:
+                # Intentar detectar área de proyección cada 30 frames
+                if not hasattr(self, '_frame_count_deteccion'):
+                    self._frame_count_deteccion = 0
+                
+                self._frame_count_deteccion += 1
+                if self._frame_count_deteccion % 30 == 0:  # Cada 30 frames
+                    area_detectada = self._detectar_area_proyeccion(frame)
+                    if area_detectada:
+                        self.area_proyeccion = area_detectada
+                        logger.info(f"✅ Área de proyección detectada automáticamente: {area_detectada}")
+                        # Configurar matriz de transformación automática
+                        self._configurar_transformacion_automatica()
+            
+            # Dibujar área de proyección si está detectada
+            if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
+                self._dibujar_area_proyeccion(frame)
+        
         # Información del gesto por defecto
         info_gesto = InfoGesto(gesto=TipoGesto.NINGUNO)
         
@@ -967,11 +1124,23 @@ class DetectorGestos:
     
     def _mover_cursor(self, posicion: Tuple[int, int]):
         """Mueve el cursor a la posición especificada"""
-        if self.modo == ModoOperacion.MESA and len(self.puntos_camara) >= 4:
-            # Transformar coordenadas para modo mesa
+        # NUEVA LÓGICA: Verificar si está en modo mesa con detección automática
+        if (self.modo == ModoOperacion.MESA and 
+            hasattr(self, 'area_proyeccion') and self.area_proyeccion):
+            
+            # Verificar si el punto está dentro del área de proyección
+            if not self._punto_dentro_proyeccion(posicion[0], posicion[1]):
+                # Si está fuera del área, no procesar el gesto
+                return
+            
+            # Mapear coordenadas del área de proyección a pantalla
+            posicion = self._mapear_coordenadas_proyeccion(posicion[0], posicion[1])
+            
+        elif self.modo == ModoOperacion.MESA and len(self.puntos_camara) >= 4:
+            # Usar calibración manual existente
             posicion = self._transformar_coordenadas(posicion)
         else:
-            # Mapear directamente a la pantalla
+            # Mapear directamente a la pantalla (modo pantalla)
             # Obtener dimensiones reales del frame
             ancho_frame = 640  # Se puede obtener dinámicamente
             alto_frame = 480
