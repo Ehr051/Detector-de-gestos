@@ -204,11 +204,12 @@ class DetectorGestos:
         # Cargar calibración existente si está en modo mesa
         if self.modo == ModoOperacion.MESA:
             self._cargar_calibracion()
-            # Intentar detección automática de proyección
-            self._detectar_proyeccion_automatica = True
-            self.area_proyeccion = None  # (x, y, width, height) del área detectada
-            self.marcos_sin_deteccion = 0
-            logger.info("Modo MESA activado - Detección automática de proyección habilitada")
+        
+        # Habilitar detección automática de proyección para ambos modos
+        self._detectar_proyeccion_automatica = True
+        self.area_proyeccion = None  # (x, y, width, height) del área detectada
+        self.marcos_sin_deteccion = 0
+        logger.info(f"Modo {modo.value.upper()} activado - Detección automática de proyección habilitada")
         
         logger.info(f"Detector de gestos inicializado en modo: {modo}")
     
@@ -250,13 +251,33 @@ class DetectorGestos:
         """Cambia entre modo pantalla y mesa"""
         if self.modo == ModoOperacion.PANTALLA:
             self.modo = ModoOperacion.MESA
-            logger.info("Cambiado a modo MESA (proyección)")
+            # 🔄 ACTIVAR DETECCIÓN AUTOMÁTICA AL CAMBIAR A MODO MESA
+            self._detectar_proyeccion_automatica = True
+            self.area_proyeccion = None
+            self.marcos_sin_deteccion = 0
+            logger.info("✅ Cambiado a modo MESA - Detección automática ACTIVADA")
+            logger.info("💡 Usa 'C' para calibración manual si necesitas ajustar")
         else:
             self.modo = ModoOperacion.PANTALLA
             # Resetear calibración al cambiar a pantalla
             self.puntos_camara = []
             self.puntos_proyeccion = []
+            # Desactivar detección automática en modo pantalla
+            self._detectar_proyeccion_automatica = False
             logger.info("Cambiado a modo PANTALLA (control directo)")
+    
+    def _activar_deteccion_automatica(self):
+        """Activa/reinicia la detección automática de proyección"""
+        self._detectar_proyeccion_automatica = True
+        self.area_proyeccion = None
+        self.marcos_sin_deteccion = 0
+        # Limpiar calibración manual previa
+        self.puntos_camara = []
+        self.puntos_proyeccion = []
+        self.matriz_transformacion = np.eye(3)
+        self.calibrando = False
+        logger.info("🔄 Detección automática REINICIADA - Buscando proyección...")
+        logger.info("💡 La detección comenzará en 3 segundos...")
     
     def _cambiar_camara(self):
         """Solicita cambio de cámara al sistema principal"""
@@ -267,6 +288,10 @@ class DetectorGestos:
     def _iniciar_calibracion(self):
         """Inicia el proceso de calibración para modo mesa"""
         if self.modo == ModoOperacion.MESA:
+            # 🚫 DESACTIVAR DETECCIÓN AUTOMÁTICA PARA CALIBRACIÓN MANUAL
+            self._detectar_proyeccion_automatica = False
+            self.area_proyeccion = None
+            
             self.calibrando = True
             self.puntos_camara = []
             self.puntos_proyeccion = []
@@ -595,23 +620,24 @@ class DetectorGestos:
             for contour in sorted(contours, key=cv2.contourArea, reverse=True):
                 area = cv2.contourArea(contour)
                 
-                # Filtrar contornos muy pequeños (menos del 10% de la imagen)
-                min_area = (frame.shape[0] * frame.shape[1]) * 0.1
+                # Filtrar contornos muy pequeños (menos del 5% de la imagen)
+                min_area = (frame.shape[0] * frame.shape[1]) * 0.05
                 if area < min_area:
                     continue
                 
                 # Aproximar el contorno a un polígono
-                epsilon = 0.02 * cv2.arcLength(contour, True)
+                epsilon = 0.04 * cv2.arcLength(contour, True)  # Más permisivo
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 
-                # Si es aproximadamente un rectángulo (4 vértices)
-                if len(approx) == 4:
+                # Si es aproximadamente un rectángulo (4 o 5 vértices para ser más permisivo)
+                if 4 <= len(approx) <= 5:
                     # Verificar que sea relativamente rectangular
                     x, y, w, h = cv2.boundingRect(approx)
                     aspect_ratio = w / h
                     
-                    # Aceptar ratios entre 1:3 y 3:1 (rectangulares razonables)
-                    if 0.3 <= aspect_ratio <= 3.0 and w > 100 and h > 100:
+                    # Aceptar ratios más amplios y tamaños más pequeños
+                    if 0.2 <= aspect_ratio <= 5.0 and w > 50 and h > 50:
+                        logger.info(f"🎯 Área detectada: {w}x{h} en ({x},{y}) - Ratio: {aspect_ratio:.2f}")
                         return (x, y, w, h)
             
             return None
@@ -855,6 +881,22 @@ class DetectorGestos:
             cv2.putText(frame, f"Calibracion: {puntos_cal}/4 puntos completados", (20, y_pos), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
             
+            # Estado de detección automática
+            y_pos += 25
+            if hasattr(self, '_detectar_proyeccion_automatica') and self._detectar_proyeccion_automatica:
+                if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
+                    estado_auto = "Auto: DETECTADO ✓"
+                    color_auto = (0, 255, 0)
+                else:
+                    estado_auto = f"Auto: Buscando... ({getattr(self, 'marcos_sin_deteccion', 0)}/100)"
+                    color_auto = (255, 200, 0)
+            else:
+                estado_auto = "Auto: DESACTIVADO (Usa 'A')"
+                color_auto = (100, 100, 100)
+            
+            cv2.putText(frame, estado_auto, (20, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_auto, 1)
+            
             # Información de calibración automática de distancia
             if hasattr(self, 'factor_distancia') and self.factor_distancia:
                 y_pos += 25
@@ -893,7 +935,8 @@ class DetectorGestos:
             "V - Mostrar/Ocultar interfaz", 
             "M - Cambiar modo (Pantalla/Mesa)",
             "K - Cambiar camara",
-            "C - Calibrar (solo modo mesa)",
+            "C - Calibracion manual (modo mesa)",
+            "A - Deteccion automatica (modo mesa)",
             "R - Reset calibracion/zoom",
             "",
             "GESTOS DISPONIBLES:",
@@ -995,21 +1038,31 @@ class DetectorGestos:
         # Detectar manos
         resultados = self.hands.process(rgb_frame)
         
-        # DETECCIÓN AUTOMÁTICA DE PROYECCIÓN (solo en modo mesa)
+        # DETECCIÓN AUTOMÁTICA DE PROYECCIÓN (solo en modo MESA)
         if hasattr(self, '_detectar_proyeccion_automatica') and self._detectar_proyeccion_automatica and self.modo == ModoOperacion.MESA:
+            # Mostrar información de depuración
+            cv2.putText(frame, "DETECCION AUTO ACTIVA", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
             if not hasattr(self, 'area_proyeccion') or self.area_proyeccion is None:
-                # Intentar detectar área de proyección cada 30 frames
+                cv2.putText(frame, "Buscando proyeccion...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                
+                # Intentar detectar área de proyección cada 10 frames
                 if not hasattr(self, '_frame_count_deteccion'):
                     self._frame_count_deteccion = 0
                 
                 self._frame_count_deteccion += 1
-                if self._frame_count_deteccion % 30 == 0:  # Cada 30 frames
+                if self._frame_count_deteccion % 10 == 0:  # Cada 10 frames (más frecuente)
+                    logger.info(f"🔍 Intentando detectar proyección (frame {self._frame_count_deteccion})")
                     area_detectada = self._detectar_area_proyeccion(frame)
                     if area_detectada:
                         self.area_proyeccion = area_detectada
                         logger.info(f"✅ Área de proyección detectada automáticamente: {area_detectada}")
                         # Configurar matriz de transformación automática
                         self._configurar_transformacion_automatica()
+                    else:
+                        logger.debug(f"⚪ No se detectó proyección en frame {self._frame_count_deteccion}")
+            else:
+                cv2.putText(frame, f"Proyeccion detectada!", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             # Dibujar área de proyección si está detectada
             if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
@@ -1372,6 +1425,11 @@ class DetectorGestos:
             self._cambiar_camara()
         elif tecla == ord('c') or tecla == ord('C'):  # Calibración
             self._iniciar_calibracion()
+        elif tecla == ord('a') or tecla == ord('A'):  # Detección automática
+            if self.modo == ModoOperacion.MESA:
+                self._activar_deteccion_automatica()
+            else:
+                logger.info("⚠️  Detección automática solo disponible en modo MESA")
         elif tecla == ord('u') or tecla == ord('U'):  # Deshacer último punto
             self.deshacer_ultimo_punto()
         elif tecla == ord('r') or tecla == ord('R'):
