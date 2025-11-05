@@ -148,6 +148,7 @@ class DetectorGestos:
         # Variables de estado para gestos
         self.cursor_x, self.cursor_y = 0, 0
         self.arrastrando = False
+        self.boton_presionado = False  # Estado del botón del mouse para arrastre
         
         # Variables para calibración automática de distancia
         self.tamaño_mano_referencia = None  # Tamaño promedio de la mano
@@ -208,7 +209,13 @@ class DetectorGestos:
         # Habilitar detección automática de proyección para ambos modos
         self._detectar_proyeccion_automatica = True
         self.area_proyeccion = None  # (x, y, width, height) del área detectada
+        self.vertices_proyeccion = None  # Vértices exactos del cuadrilátero detectado
+        self.matriz_perspectiva = None  # Matriz de transformación de perspectiva
         self.marcos_sin_deteccion = 0
+        
+        # Margen de tolerancia alrededor del área (en píxeles)
+        # Permite que parte de la mano esté fuera al interactuar con los bordes
+        self.MARGEN_AREA = 80  # 80 píxeles de margen alrededor del área
         
         # Variables de confirmación automática
         self.area_pendiente_confirmacion = None
@@ -603,8 +610,9 @@ class DetectorGestos:
     
     def _detectar_area_proyeccion(self, frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
         """
-        Detecta automáticamente el área rectangular de proyección en la imagen
-        Busca rectángulos grandes y brillantes que podrían ser una proyección
+        Detecta automáticamente el área de proyección en la imagen.
+        Busca cuadriláteros grandes (rectángulos o trapecios por perspectiva).
+        Maneja proyecciones con ángulo (35-45°) y distorsión trapezoidal.
         """
         try:
             # Convertir a escala de grises
@@ -622,7 +630,7 @@ class DetectorGestos:
             if not contours:
                 return None
             
-            # Buscar el contorno más grande que sea rectangular
+            # Buscar el contorno más grande que sea un cuadrilátero
             for contour in sorted(contours, key=cv2.contourArea, reverse=True):
                 area = cv2.contourArea(contour)
                 
@@ -632,19 +640,49 @@ class DetectorGestos:
                     continue
                 
                 # Aproximar el contorno a un polígono
-                epsilon = 0.04 * cv2.arcLength(contour, True)  # Más permisivo
+                # Usar epsilon más flexible para capturar formas con perspectiva
+                epsilon = 0.02 * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 
-                # Si es aproximadamente un rectángulo (4 o 5 vértices para ser más permisivo)
-                if 4 <= len(approx) <= 5:
-                    # Verificar que sea relativamente rectangular
-                    x, y, w, h = cv2.boundingRect(approx)
-                    aspect_ratio = w / h
+                # Buscar cuadriláteros (4 vértices) - incluye rectángulos Y trapecios
+                if len(approx) == 4:
+                    # Obtener los 4 vértices del cuadrilátero
+                    vertices = approx.reshape(4, 2)
                     
-                    # Aceptar ratios más amplios y tamaños más pequeños
-                    if 0.2 <= aspect_ratio <= 5.0 and w > 50 and h > 50:
-                        logger.info(f"🎯 Área detectada: {w}x{h} en ({x},{y}) - Ratio: {aspect_ratio:.2f}")
+                    # Ordenar vértices: top-left, top-right, bottom-right, bottom-left
+                    vertices = self._ordenar_vertices(vertices)
+                    
+                    # Guardar vértices exactos para transformación de perspectiva
+                    self.vertices_proyeccion = vertices
+                    
+                    # Calcular bounding box para compatibilidad con código existente
+                    x, y, w, h = cv2.boundingRect(approx)
+                    
+                    # Verificar tamaño mínimo
+                    if w > 50 and h > 50:
+                        # Calcular matriz de transformación de perspectiva
+                        self._calcular_matriz_perspectiva(vertices, w, h)
+                        
+                        logger.info(f"🎯 Cuadrilátero detectado: {w}x{h} en ({x},{y})")
+                        logger.info(f"   Vértices: TL{tuple(vertices[0])}, TR{tuple(vertices[1])}, BR{tuple(vertices[2])}, BL{tuple(vertices[3])}")
                         return (x, y, w, h)
+                
+                # Si no encontramos un cuadrilátero perfecto, buscar aproximaciones
+                elif 5 <= len(approx) <= 6:
+                    # Intentar con epsilon más agresivo para forzar 4 vértices
+                    epsilon = 0.05 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    
+                    if len(approx) == 4:
+                        vertices = approx.reshape(4, 2)
+                        vertices = self._ordenar_vertices(vertices)
+                        self.vertices_proyeccion = vertices
+                        
+                        x, y, w, h = cv2.boundingRect(approx)
+                        if w > 50 and h > 50:
+                            self._calcular_matriz_perspectiva(vertices, w, h)
+                            logger.info(f"🎯 Cuadrilátero aproximado detectado: {w}x{h}")
+                            return (x, y, w, h)
             
             return None
             
@@ -652,44 +690,165 @@ class DetectorGestos:
             logger.error(f"Error detectando área de proyección: {e}")
             return None
     
+    def _ordenar_vertices(self, vertices: np.ndarray) -> np.ndarray:
+        """
+        Ordena los 4 vértices de un cuadrilátero en orden:
+        [top-left, top-right, bottom-right, bottom-left]
+        Esto es crucial para la transformación de perspectiva correcta.
+        """
+        # Ordenar por suma de coordenadas (x+y)
+        # Top-left tendrá la suma más pequeña, bottom-right la más grande
+        suma = vertices.sum(axis=1)
+        diff = np.diff(vertices, axis=1)
+        
+        ordenados = np.zeros((4, 2), dtype=np.float32)
+        
+        # Top-left: suma mínima
+        ordenados[0] = vertices[np.argmin(suma)]
+        
+        # Bottom-right: suma máxima
+        ordenados[2] = vertices[np.argmax(suma)]
+        
+        # Top-right: diferencia (x-y) mínima
+        ordenados[1] = vertices[np.argmin(diff)]
+        
+        # Bottom-left: diferencia (x-y) máxima
+        ordenados[3] = vertices[np.argmax(diff)]
+        
+        return ordenados
+    
+    def _calcular_matriz_perspectiva(self, vertices: np.ndarray, ancho: int, alto: int):
+        """
+        Calcula la matriz de transformación de perspectiva para mapear
+        el cuadrilátero detectado (con perspectiva/trapecio) a un rectángulo perfecto.
+        
+        Esto permite que proyecciones con ángulo se manejen correctamente.
+        """
+        # Definir los puntos destino: un rectángulo perfecto
+        puntos_destino = np.array([
+            [0, 0],                    # Top-left
+            [ancho - 1, 0],            # Top-right
+            [ancho - 1, alto - 1],     # Bottom-right
+            [0, alto - 1]              # Bottom-left
+        ], dtype=np.float32)
+        
+        # Calcular matriz de transformación
+        self.matriz_perspectiva = cv2.getPerspectiveTransform(
+            vertices.astype(np.float32), 
+            puntos_destino
+        )
+        
+        logger.debug(f"✓ Matriz de perspectiva calculada para corrección de ángulo")
+    
+    def _aplicar_transformacion_perspectiva(self, x: int, y: int) -> Tuple[int, int]:
+        """
+        Aplica la transformación de perspectiva a un punto (x, y).
+        Convierte coordenadas del trapecio/cuadrilátero con perspectiva
+        a coordenadas del rectángulo normalizado.
+        """
+        if self.matriz_perspectiva is None:
+            return x, y
+        
+        # Convertir punto a formato homogéneo
+        punto = np.array([[[x, y]]], dtype=np.float32)
+        
+        # Aplicar transformación
+        punto_transformado = cv2.perspectiveTransform(punto, self.matriz_perspectiva)
+        
+        return int(punto_transformado[0][0][0]), int(punto_transformado[0][0][1])
+    
     def _dibujar_area_proyeccion(self, frame: np.ndarray):
-        """Dibuja el área de proyección detectada con un recuadro verde"""
+        """Dibuja el área de proyección detectada (cuadrilátero real + margen de tolerancia)"""
         if hasattr(self, 'area_proyeccion') and self.area_proyeccion:
             x, y, w, h = self.area_proyeccion
+            margen = getattr(self, 'MARGEN_AREA', 80)
             
-            # Dibujar recuadro verde brillante
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+            # Si tenemos los vértices exactos del cuadrilátero, dibujarlos
+            if hasattr(self, 'vertices_proyeccion') and self.vertices_proyeccion is not None:
+                vertices = self.vertices_proyeccion.astype(np.int32)
+                
+                # Dibujar el cuadrilátero real (trapecio si hay perspectiva) en verde brillante
+                cv2.polylines(frame, [vertices], isClosed=True, color=(0, 255, 0), thickness=3)
+                
+                # Dibujar los vértices con círculos y etiquetas
+                labels = ['TL', 'TR', 'BR', 'BL']
+                colors = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (255, 128, 0)]
+                for i, (punto, label, color) in enumerate(zip(vertices, labels, colors)):
+                    cv2.circle(frame, tuple(punto), 8, color, -1)
+                    cv2.putText(frame, label, tuple(punto + 10), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # Información sobre corrección de perspectiva
+                if hasattr(self, 'matriz_perspectiva') and self.matriz_perspectiva is not None:
+                    cv2.putText(frame, "PERSPECTIVA CORREGIDA", (x, y - 35), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            else:
+                # Fallback: dibujar rectángulo simple
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                
+                # Esquinas
+                cv2.circle(frame, (x, y), 8, (0, 255, 0), -1)
+                cv2.circle(frame, (x + w, y), 8, (0, 255, 0), -1)
+                cv2.circle(frame, (x + w, y + h), 8, (0, 255, 0), -1)
+                cv2.circle(frame, (x, y + h), 8, (0, 255, 0), -1)
             
-            # Dibujar las esquinas con círculos
-            cv2.circle(frame, (x, y), 8, (0, 255, 0), -1)  # Superior izquierda
-            cv2.circle(frame, (x + w, y), 8, (0, 255, 0), -1)  # Superior derecha
-            cv2.circle(frame, (x + w, y + h), 8, (0, 255, 0), -1)  # Inferior derecha
-            cv2.circle(frame, (x, y + h), 8, (0, 255, 0), -1)  # Inferior izquierda
+            # Dibujar zona de margen (bounding box expandido)
+            x_margen = max(0, x - margen)
+            y_margen = max(0, y - margen)
+            w_margen = min(frame.shape[1] - x_margen, w + 2 * margen)
+            h_margen = min(frame.shape[0] - y_margen, h + 2 * margen)
+            
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (x_margen, y_margen), 
+                         (x_margen + w_margen, y_margen + h_margen), 
+                         (0, 200, 0), 2)
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
             
             # Texto informativo
-            cv2.putText(frame, "AREA DE PROYECCION", (x, y - 10), 
+            cv2.putText(frame, f"AREA PROYECCION (Margen: {margen}px)", (x, y - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
     def _punto_dentro_proyeccion(self, x: int, y: int) -> bool:
-        """Verifica si un punto está dentro del área de proyección detectada"""
+        """Verifica si un punto está dentro del área de proyección detectada (con margen)"""
         if not hasattr(self, 'area_proyeccion') or not self.area_proyeccion:
             return True  # Si no hay área definida, permitir todos los puntos
         
         px, py, pw, ph = self.area_proyeccion
-        return px <= x <= (px + pw) and py <= y <= (py + ph)
+        
+        # Aplicar margen de tolerancia (expandir el área)
+        margen = getattr(self, 'MARGEN_AREA', 80)
+        x_min = px - margen
+        y_min = py - margen
+        x_max = px + pw + margen
+        y_max = py + ph + margen
+        
+        return x_min <= x <= x_max and y_min <= y <= y_max
     
     def _mapear_coordenadas_proyeccion(self, x: int, y: int) -> Tuple[int, int]:
         """
-        Mapea coordenadas dentro del área de proyección a coordenadas de pantalla
+        Mapea coordenadas dentro del área de proyección a coordenadas de pantalla.
+        Si hay transformación de perspectiva, la aplica primero para corregir distorsión.
         """
         if not hasattr(self, 'area_proyeccion') or not self.area_proyeccion:
             return x, y
         
         px, py, pw, ph = self.area_proyeccion
         
-        # Normalizar coordenadas dentro del área de proyección (0.0 a 1.0)
-        norm_x = (x - px) / pw if pw > 0 else 0
-        norm_y = (y - py) / ph if ph > 0 else 0
+        # Si tenemos transformación de perspectiva, aplicarla primero
+        if hasattr(self, 'matriz_perspectiva') and self.matriz_perspectiva is not None:
+            # Transformar el punto para corregir perspectiva
+            # Esto convierte coordenadas del trapecio a coordenadas rectangulares
+            x_relativo = x - px
+            y_relativo = y - py
+            x_corregido, y_corregido = self._aplicar_transformacion_perspectiva(x_relativo, y_relativo)
+            
+            # Normalizar usando las dimensiones corregidas
+            norm_x = x_corregido / pw if pw > 0 else 0
+            norm_y = y_corregido / ph if ph > 0 else 0
+        else:
+            # Sin corrección de perspectiva, mapeo directo
+            norm_x = (x - px) / pw if pw > 0 else 0
+            norm_y = (y - py) / ph if ph > 0 else 0
         
         # Limitar a rango válido
         norm_x = max(0.0, min(1.0, norm_x))
@@ -778,11 +937,26 @@ class DetectorGestos:
         if self.tamaño_mano_referencia > 0:
             self.factor_distancia = tamaño_promedio / self.tamaño_mano_referencia
             
-            # Ajustar distancia de pinza adaptativa
+            # Ajustar distancia de pinza adaptativa según la distancia
+            # Base: configuracion.distancia_pinza (40 por defecto)
+            # Multiplicar por factor de distancia pero con límites más estrictos
             self.distancia_pinza_adaptativa = self.configuracion.distancia_pinza * self.factor_distancia
             
-            # Limitar valores extremos
-            self.distancia_pinza_adaptativa = max(20, min(100, self.distancia_pinza_adaptativa))
+            # Aplicar límites según la distancia
+            if self.factor_distancia < 0.5:
+                # MUY lejos (< 50% del tamaño de referencia) - prácticamente desactivar gestos
+                self.distancia_pinza_adaptativa = 5  # Casi imposible de activar
+                logger.debug(f"⚠️ Mano MUY lejos (factor {self.factor_distancia:.2f}) - gestos casi desactivados")
+            elif self.factor_distancia < 0.7:
+                # Lejos (50-70% del tamaño) - muy restrictivo
+                self.distancia_pinza_adaptativa = max(self.distancia_pinza_adaptativa, 80)
+                logger.debug(f"⚠️ Mano lejos (factor {self.factor_distancia:.2f}) - umbral alto: {self.distancia_pinza_adaptativa:.0f}px")
+            elif self.factor_distancia < 0.9:
+                # Medio lejos (70-90%) - restrictivo
+                self.distancia_pinza_adaptativa = max(self.distancia_pinza_adaptativa, 50)
+            else:
+                # Cerca (> 90%) - normal con límites razonables
+                self.distancia_pinza_adaptativa = max(20, min(80, self.distancia_pinza_adaptativa))
     
     def _mostrar_deteccion_automatica(self, frame: np.ndarray):
         """Implementar rectángulos en esquinas para detección automática (modo backup)"""
@@ -931,6 +1105,12 @@ class DetectorGestos:
                 y_pos += 20
                 cv2.putText(frame, f"Umbral: {int(self.distancia_pinza_adaptativa)}px", (panel_x + 15, y_pos), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_factor, 1)
+            
+            # Información del margen de área
+            if hasattr(self, 'MARGEN_AREA'):
+                y_pos += 20
+                cv2.putText(frame, f"Margen: {self.MARGEN_AREA}px", (panel_x + 15, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
         
         # CONTROLES DE TECLADO
         y_pos += 45
@@ -944,7 +1124,8 @@ class DetectorGestos:
             "K - Cambiar camara",
             "C - Calibracion manual",
             "A - Deteccion automatica",
-            "R - Reset sistema"
+            "R - Reset sistema",
+            "+/- - Ajustar margen (Mesa)"
         ]
         
         y_pos += 25
@@ -1002,12 +1183,6 @@ class DetectorGestos:
             "A - Deteccion automatica (modo mesa)",
             "R - Reset calibracion/zoom",
             "",
-            "GESTOS DISPONIBLES:",
-            "Mano abierta - Mover cursor",
-            "Pulgar + Indice - Click izquierdo",
-            "Doble pinza rapida - Doble click",
-            "Pulgar + Medio - Click derecho",
-            "Dos manos - Zoom in/out"
         ]
         
         y_pos += 25
@@ -1130,7 +1305,9 @@ class DetectorGestos:
         
         if resultados.multi_hand_landmarks:
             if len(resultados.multi_hand_landmarks) == 1:
-                # Una mano detectada
+                # Una mano detectada - resetear zoom
+                self.zoom_activo = False
+                self.distancia_puños_anterior = 0
                 info_gesto = self._detectar_gestos_una_mano(
                     resultados.multi_hand_landmarks[0], frame
                 )
@@ -1145,6 +1322,10 @@ class DetectorGestos:
                 self.mp_drawing.draw_landmarks(
                     frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
                 )
+        else:
+            # No hay manos - resetear zoom
+            self.zoom_activo = False
+            self.distancia_puños_anterior = 0
         
         # Ejecutar acción según el gesto
         self._ejecutar_accion(info_gesto)
@@ -1187,15 +1368,13 @@ class DetectorGestos:
         indice_tip = puntos[8]
         medio_tip = puntos[12]
         
-        # Verificar si es gesto de índice extendido (para navegación precisa)
-        if self._es_gesto_indice_extendido(puntos):
-            # Usar índice para cursor preciso
-            posicion_suavizada = self._suavizar_movimiento(indice_tip[0], indice_tip[1])
-            return InfoGesto(
-                gesto=TipoGesto.CURSOR,
-                posicion=posicion_suavizada,
-                confianza=0.95
-            )
+        # 🚫 FILTRO PRINCIPAL: En modo MESA con área detectada, ignorar manos fuera del área
+        if (self.modo == ModoOperacion.MESA and 
+            hasattr(self, 'area_proyeccion') and self.area_proyeccion):
+            # Verificar si el índice (punto principal de control) está dentro del área
+            if not self._punto_dentro_proyeccion(indice_tip[0], indice_tip[1]):
+                # Mano fuera del área de proyección - ignorar completamente
+                return InfoGesto(gesto=TipoGesto.NINGUNO)
         
         # Calcular distancias para gestos de pinza
         distancia_pulgar_indice = np.sqrt((pulgar_tip[0] - indice_tip[0])**2 + 
@@ -1206,49 +1385,36 @@ class DetectorGestos:
         # Determinar gesto
         tiempo_actual = time.time()
         
+        # Click izquierdo con pinza pulgar+índice (permite arrastre)
         if distancia_pulgar_indice < self.distancia_pinza_adaptativa:
-            # Click izquierdo o arrastrar
-            posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
-            
-            # 🚫 FILTRAR CLICKS FUERA DEL ÁREA DE PROYECCIÓN
-            if (self.modo == ModoOperacion.MESA and 
-                hasattr(self, 'area_proyeccion') and self.area_proyeccion and
-                not self._punto_dentro_proyeccion(posicion_click[0], posicion_click[1])):
-                # Si está fuera del área, retornar cursor normal
+            # Solo permitir click si la mano está cerca o la pinza está muy cerrada
+            if getattr(self, 'factor_distancia', 1.0) > 0.7 or distancia_pulgar_indice < 20:
+                posicion_click = ((pulgar_tip[0] + indice_tip[0]) // 2, (pulgar_tip[1] + indice_tip[1]) // 2)
+                
+                # 🚫 FILTRAR CLICKS FUERA DEL ÁREA DE PROYECCIÓN
+                if (self.modo == ModoOperacion.MESA and 
+                    hasattr(self, 'area_proyeccion') and self.area_proyeccion and
+                    not self._punto_dentro_proyeccion(posicion_click[0], posicion_click[1])):
+                    # Si está fuera del área, retornar cursor normal
+                    return InfoGesto(
+                        gesto=TipoGesto.CURSOR,
+                        posicion=indice_tip,
+                        confianza=0.7
+                    )
+                
+                # Click izquierdo con soporte de arrastre
+                return InfoGesto(
+                    gesto=TipoGesto.CLICK_IZQUIERDO,
+                    posicion=posicion_click,
+                    confianza=0.9
+                )
+            # Si no cumple la condición de distancia, solo cursor
+            else:
                 return InfoGesto(
                     gesto=TipoGesto.CURSOR,
                     posicion=indice_tip,
                     confianza=0.7
                 )
-            
-            if self.arrastrando or tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
-                # Verificar doble click
-                if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
-                    return InfoGesto(
-                        gesto=TipoGesto.DOBLE_CLICK,
-                        posicion=posicion_click,
-                        confianza=0.9
-                    )
-                else:
-                    return InfoGesto(
-                        gesto=TipoGesto.CLICK_IZQUIERDO,
-                        posicion=posicion_click,
-                        confianza=0.9
-                    )
-            else:
-                # Click simple
-                if tiempo_actual - self.ultimo_click_tiempo < self.doble_click_ventana:
-                    return InfoGesto(
-                        gesto=TipoGesto.DOBLE_CLICK,
-                        posicion=posicion_click,
-                        confianza=0.9
-                    )
-                else:
-                    return InfoGesto(
-                        gesto=TipoGesto.CLICK_IZQUIERDO,
-                        posicion=posicion_click,
-                        confianza=0.9
-                    )
         
         elif distancia_pulgar_medio < self.distancia_pinza_adaptativa:
             # Click derecho
@@ -1294,26 +1460,40 @@ class DetectorGestos:
         # Calcular distancia entre manos
         distancia_actual = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
         
-        if self.zoom_activo:
-            # Determinar dirección del zoom
-            if distancia_actual > self.distancia_puños_anterior * 1.1:
-                return InfoGesto(
-                    gesto=TipoGesto.ZOOM_IN,
-                    posicion=((pos1[0] + pos2[0]) // 2, (pos1[1] + pos2[1]) // 2),
-                    confianza=0.8
-                )
-            elif distancia_actual < self.distancia_puños_anterior * 0.9:
-                return InfoGesto(
-                    gesto=TipoGesto.ZOOM_OUT,
-                    posicion=((pos1[0] + pos2[0]) // 2, (pos1[1] + pos2[1]) // 2),
-                    confianza=0.8
-                )
+        # Si es la primera vez o el zoom no estaba activo, inicializar
+        if not self.zoom_activo or self.distancia_puños_anterior == 0:
+            self.zoom_activo = True
+            self.distancia_puños_anterior = distancia_actual
+            return InfoGesto(gesto=TipoGesto.NINGUNO)
         
-        # Actualizar estado de zoom
-        self.zoom_activo = True
-        self.distancia_puños_anterior = distancia_actual
+        # Calcular diferencia con umbral más pequeño para mejor sensibilidad
+        diferencia = distancia_actual - self.distancia_puños_anterior
+        umbral_minimo = 15  # píxeles de cambio mínimo para detectar zoom
         
-        return InfoGesto(gesto=TipoGesto.NINGUNO)
+        resultado = InfoGesto(gesto=TipoGesto.NINGUNO)
+        
+        if diferencia > umbral_minimo:
+            # Manos se alejan = Zoom in
+            resultado = InfoGesto(
+                gesto=TipoGesto.ZOOM_IN,
+                posicion=((pos1[0] + pos2[0]) // 2, (pos1[1] + pos2[1]) // 2),
+                confianza=0.8
+            )
+            logger.debug(f"Zoom IN detectado: distancia {self.distancia_puños_anterior:.1f} → {distancia_actual:.1f} (diff: +{diferencia:.1f})")
+        elif diferencia < -umbral_minimo:
+            # Manos se acercan = Zoom out
+            resultado = InfoGesto(
+                gesto=TipoGesto.ZOOM_OUT,
+                posicion=((pos1[0] + pos2[0]) // 2, (pos1[1] + pos2[1]) // 2),
+                confianza=0.8
+            )
+            logger.debug(f"Zoom OUT detectado: distancia {self.distancia_puños_anterior:.1f} → {distancia_actual:.1f} (diff: {diferencia:.1f})")
+        
+        # Actualizar distancia anterior solo si hubo un cambio significativo
+        if abs(diferencia) > umbral_minimo:
+            self.distancia_puños_anterior = distancia_actual
+        
+        return resultado
     
     def _suavizar_movimiento(self, x: int, y: int) -> Tuple[int, int]:
         """Aplica suavizado al movimiento del cursor"""
@@ -1333,10 +1513,31 @@ class DetectorGestos:
     def _ejecutar_accion(self, info_gesto: InfoGesto):
         """Ejecuta la acción correspondiente al gesto detectado"""
         if info_gesto.gesto == TipoGesto.CURSOR and info_gesto.posicion:
+            # Si el botón estaba presionado y ahora es cursor (mano abierta), soltar
+            if self.boton_presionado:
+                try:
+                    pyautogui.mouseUp()
+                    self.boton_presionado = False
+                    self.arrastrando = False
+                    logger.info("Click soltado (arrastre terminado)")
+                except pyautogui.FailSafeException:
+                    logger.warning("FailSafe activado - mouseUp cancelado")
             self._mover_cursor(info_gesto.posicion)
         
         elif info_gesto.gesto == TipoGesto.CLICK_IZQUIERDO:
-            self._realizar_click_izquierdo()
+            # Presionar el botón si no está presionado (inicia arrastre)
+            if not self.boton_presionado:
+                try:
+                    pyautogui.mouseDown()
+                    self.boton_presionado = True
+                    self.arrastrando = True
+                    self.ultimo_click_tiempo = time.time()
+                    logger.info("Click izquierdo presionado (arrastre iniciado)")
+                except pyautogui.FailSafeException:
+                    logger.warning("FailSafe activado - mouseDown cancelado")
+            # Si ya está presionado, solo mover (continuar arrastre)
+            elif info_gesto.posicion:
+                self._mover_cursor(info_gesto.posicion)
         
         elif info_gesto.gesto == TipoGesto.DOBLE_CLICK:
             self._realizar_doble_click()
@@ -1521,6 +1722,14 @@ class DetectorGestos:
                 self.matriz_transformacion = np.eye(3)
                 logger.info("Calibración reseteada")
             logger.info("Sistema reseteado")
+        elif tecla == ord('+') or tecla == ord('='):  # Aumentar margen
+            if self.modo == ModoOperacion.MESA:
+                self.MARGEN_AREA = min(200, self.MARGEN_AREA + 10)
+                logger.info(f"📏 Margen aumentado a {self.MARGEN_AREA}px")
+        elif tecla == ord('-') or tecla == ord('_'):  # Disminuir margen
+            if self.modo == ModoOperacion.MESA:
+                self.MARGEN_AREA = max(0, self.MARGEN_AREA - 10)
+                logger.info(f"📏 Margen reducido a {self.MARGEN_AREA}px")
         
         return True
     
